@@ -19,7 +19,7 @@ type SessionLike = {
 const sid = (s: SessionLike | undefined) => (s ? ((s.id ?? s.sessionID) as string | undefined) : undefined)
 
 export default Plugin.define({
-  id: "local.session-tree",
+  id: "opencode-session-tree",
   async setup(ctx) {
     const options = (ctx.options ?? {}) as { projectsRoot?: string }
     const projectsRoot = path.resolve(

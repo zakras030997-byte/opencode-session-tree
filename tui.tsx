@@ -14,7 +14,7 @@ const EMPTY: Tree = { projectsRoot: "", projects: [], loose: [] }
 const isRightClick = (e: unknown) => (e as { button?: number } | undefined)?.button === 2
 
 export default Plugin.define({
-  id: "local.session-tree",
+  id: "opencode-session-tree",
   async setup(context) {
     const [getTree, setTree] = createSignal<Tree>(EMPTY)
     const [getExpanded, setExpanded] = createSignal<Set<string>>(new Set())
