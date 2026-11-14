@@ -347,7 +347,7 @@ export default Plugin.define({
     const renderTree = (t: Tree) => (
       <box flexDirection="column" marginTop={1}>
         <box flexDirection="row" width="100%" justifyContent="center" onMouseUp={() => void newProject()}>
-          <text fg="yellow" attributes={{ bold: true }}>{`─ ${HEADER} ─`}</text>
+          <text fg="yellow">{`─ ${HEADER} ─`}</text>
         </box>
         <Show when={t.projects.length > 0} fallback={<text fg={muted}>  Нет проектов — «+» или /tree-project-new</text>}>
           <For each={t.projects}>

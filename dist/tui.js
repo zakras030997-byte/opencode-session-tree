@@ -670,9 +670,6 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       _$setProp(_el$2, "onMouseUp", () => void newProject());
       _$insertNode(_el$3, _$createTextNode(`\u2500 \u041F\u0420\u041E\u0415\u041A\u0422\u042B \u2500`));
       _$setProp(_el$3, "fg", "yellow");
-      _$setProp(_el$3, "attributes", {
-        bold: true
-      });
       _$insert(_el$, _$createComponent(Show, {
         get when() {
           return t.projects.length > 0;
