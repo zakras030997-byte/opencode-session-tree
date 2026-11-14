@@ -9,6 +9,9 @@ import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
 import { Plugin } from "@opencode/plugin/tui";
 import { createSignal, For, Show } from "solid-js";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 
 // rpc.ts
 import { Rpc } from "@opencode/plugin/rpc";
@@ -185,6 +188,25 @@ var TreeRpc = Rpc.define({
         additionalProperties: false
       },
       output: emptyInput,
+      errors
+    },
+    moveThread: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string" },
+          folder: { type: "string" },
+          targetProject: { type: "string" }
+        },
+        required: ["sessionID", "targetProject"],
+        additionalProperties: false
+      },
+      output: {
+        type: "object",
+        properties: { folder: { type: "string" } },
+        required: ["folder"],
+        additionalProperties: false
+      },
       errors
     },
     createLoose: {
@@ -490,6 +512,62 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         message: id
       });
     };
+    const toggleSidebar = async () => {
+      const cliConfig = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "opencode", "cli.json");
+      let cfg = {};
+      try {
+        cfg = JSON.parse(await fs.readFile(cliConfig, "utf8"));
+      } catch {}
+      const current = cfg.session?.sidebar ?? "auto";
+      const next = current === "hide" ? "auto" : "hide";
+      cfg.$schema = cfg.$schema ?? "https://opencode.ai/v2/cli.json";
+      cfg.session = {
+        ...cfg.session ?? {},
+        sidebar: next
+      };
+      await fs.mkdir(path.dirname(cliConfig), {
+        recursive: true
+      });
+      await fs.writeFile(cliConfig, JSON.stringify(cfg, null, 2) + `
+`);
+      context.ui.toast.show({
+        title: "session-tree",
+        message: next === "hide" ? "\u0421\u0430\u0439\u0434\u0431\u0430\u0440 \u0441\u043A\u0440\u044B\u0442" : "\u0421\u0430\u0439\u0434\u0431\u0430\u0440 \u0432\u043A\u043B\u044E\u0447\u0451\u043D",
+        variant: "info"
+      });
+    };
+    const moveThreadDirect = async (target) => {
+      const projects = getTree().projects.filter((p) => p.path !== target.projectPath);
+      if (projects.length === 0) {
+        context.ui.toast.show({
+          title: "session-tree",
+          message: "\u041D\u0435\u0442 \u0434\u0440\u0443\u0433\u0438\u0445 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432",
+          variant: "info"
+        });
+        return;
+      }
+      const targetProject = await context.ui.dialog.select({
+        title: "\u041F\u0435\u0440\u0435\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u0432 \u043F\u0440\u043E\u0435\u043A\u0442\u2026",
+        options: projects.map((p) => ({
+          title: p.name,
+          value: p.path,
+          description: p.path
+        }))
+      });
+      if (!targetProject)
+        return;
+      try {
+        const res = await rpc().moveThread({
+          sessionID: target.sessionID,
+          folder: target.folder,
+          targetProject
+        });
+        await refresh();
+        toastOk(`\u041F\u0435\u0440\u0435\u043C\u0435\u0449\u0451\u043D: ${res.folder}`);
+      } catch (e) {
+        toastError(e);
+      }
+    };
     const renameThreadCmd = async () => {
       const picked = await pickThread();
       if (picked)
@@ -554,6 +632,9 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
           title: "\u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u0442\u044C",
           value: "rename"
         }, {
+          title: "\u041F\u0435\u0440\u0435\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u0432 \u0434\u0440\u0443\u0433\u043E\u0439 \u043F\u0440\u043E\u0435\u043A\u0442\u2026",
+          value: "move"
+        }, {
           title: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C ID",
           value: "copy"
         }, {
@@ -565,6 +646,12 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         openSession(th.sessionID);
       else if (action === "rename")
         await renameThreadDirect(th.sessionID);
+      else if (action === "move")
+        await moveThreadDirect({
+          projectPath,
+          folder: th.folder,
+          sessionID: th.sessionID
+        });
       else if (action === "copy")
         await copyIdCmd(th.sessionID);
       else if (action === "delete")
@@ -584,6 +671,9 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
           title: "\u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u0442\u044C",
           value: "rename"
         }, {
+          title: "\u041F\u0435\u0440\u0435\u043C\u0435\u0441\u0442\u0438\u0442\u044C \u0432 \u043F\u0440\u043E\u0435\u043A\u0442 (\u0441\u043E\u0437\u0434\u0430\u0441\u0442 \u043F\u043E\u0434\u043F\u0430\u043F\u043A\u0443)\u2026",
+          value: "move"
+        }, {
           title: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C ID",
           value: "copy"
         }, {
@@ -595,6 +685,10 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         openSession(s.sessionID);
       else if (action === "rename")
         await renameThreadDirect(s.sessionID);
+      else if (action === "move")
+        await moveThreadDirect({
+          sessionID: s.sessionID
+        });
       else if (action === "copy")
         await copyIdCmd(s.sessionID);
       else if (action === "delete")
@@ -648,6 +742,14 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         title: "\u0414\u0435\u0440\u0435\u0432\u043E: \u0443\u0434\u0430\u043B\u0438\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442",
         palette: true,
         run: deleteProjectCmd
+      }, {
+        id: "session-tree.sidebar",
+        title: "\u0414\u0435\u0440\u0435\u0432\u043E: \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C/\u0441\u043A\u0440\u044B\u0442\u044C \u0441\u0430\u0439\u0434\u0431\u0430\u0440",
+        slash: {
+          name: "tree-sidebar"
+        },
+        palette: true,
+        run: toggleSidebar
       }, {
         id: "session-tree.refresh",
         title: "\u0414\u0435\u0440\u0435\u0432\u043E: \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C",

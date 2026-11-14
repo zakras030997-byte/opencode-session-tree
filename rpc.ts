@@ -191,6 +191,26 @@ export const TreeRpc = Rpc.define({
       errors,
     },
 
+    moveThread: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string" },
+          folder: { type: "string" },
+          targetProject: { type: "string" },
+        },
+        required: ["sessionID", "targetProject"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { folder: { type: "string" } },
+        required: ["folder"],
+        additionalProperties: false,
+      },
+      errors,
+    },
+
     createLoose: {
       input: emptyInput,
       output: {

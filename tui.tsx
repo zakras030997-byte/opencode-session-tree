@@ -3,6 +3,9 @@
 // Контекстное меню действует напрямую на тред/проект, по которому кликнули.
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, Show } from "solid-js"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { TreeRpc } from "./rpc"
 
 type ThreadDto = { folder: string; slug: string; sessionID: string | null; title: string }
@@ -249,6 +252,53 @@ export default Plugin.define({
       await context.ui.dialog.alert({ title: "Session ID", message: id })
     }
 
+    // Тумблер сайдбара: session.sidebar auto<->hide в cli.json (перечитывается на лету).
+    const toggleSidebar = async () => {
+      const cliConfig = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "opencode", "cli.json")
+      let cfg: Record<string, unknown> = {}
+      try {
+        cfg = JSON.parse(await fs.readFile(cliConfig, "utf8"))
+      } catch {
+        /* файла нет — создадим */
+      }
+      const current = (cfg.session as { sidebar?: string } | undefined)?.sidebar ?? "auto"
+      const next = current === "hide" ? "auto" : "hide"
+      cfg.$schema = (cfg.$schema as string | undefined) ?? "https://opencode.ai/v2/cli.json"
+      cfg.session = { ...((cfg.session as object) ?? {}), sidebar: next }
+      await fs.mkdir(path.dirname(cliConfig), { recursive: true })
+      await fs.writeFile(cliConfig, JSON.stringify(cfg, null, 2) + "\n")
+      context.ui.toast.show({
+        title: "session-tree",
+        message: next === "hide" ? "Сайдбар скрыт" : "Сайдбар включён",
+        variant: "info",
+      })
+    }
+
+    // Переместить тред в другой проект (папка + история; для «без проекта» — только история).
+    const moveThreadDirect = async (target: { projectPath?: string; folder?: string; sessionID: string }) => {
+      const projects = getTree().projects.filter((p) => p.path !== target.projectPath)
+      if (projects.length === 0) {
+        context.ui.toast.show({ title: "session-tree", message: "Нет других проектов", variant: "info" })
+        return
+      }
+      const targetProject = await context.ui.dialog.select({
+        title: "Переместить в проект…",
+        options: projects.map((p) => ({ title: p.name, value: p.path, description: p.path })),
+      })
+      if (!targetProject) return
+      try {
+        const res = await rpc().moveThread({
+          sessionID: target.sessionID,
+          folder: target.folder,
+          targetProject,
+        })
+        await refresh()
+        toastOk(`Перемещён: ${res.folder}`)
+      } catch (e) {
+        toastError(e)
+      }
+    }
+
     // --- Обёртки для палитры (там выбор треда уместен) --------------------
 
     const renameThreadCmd = async () => {
@@ -294,12 +344,14 @@ export default Plugin.define({
         options: [
           { title: "Открыть", value: "open" },
           { title: "Переименовать", value: "rename" },
+          { title: "Переместить в другой проект…", value: "move" },
           { title: "Копировать ID", value: "copy" },
           { title: "Удалить", value: "delete" },
         ],
       })
       if (action === "open") openSession(th.sessionID)
       else if (action === "rename") await renameThreadDirect(th.sessionID)
+      else if (action === "move") await moveThreadDirect({ projectPath, folder: th.folder, sessionID: th.sessionID })
       else if (action === "copy") await copyIdCmd(th.sessionID)
       else if (action === "delete") await deleteThreadDirect({ projectPath, folder: th.folder, sessionID: th.sessionID })
     }
@@ -310,12 +362,14 @@ export default Plugin.define({
         options: [
           { title: "Открыть", value: "open" },
           { title: "Переименовать", value: "rename" },
+          { title: "Переместить в проект (создаст подпапку)…", value: "move" },
           { title: "Копировать ID", value: "copy" },
           { title: "Удалить", value: "delete" },
         ],
       })
       if (action === "open") openSession(s.sessionID)
       else if (action === "rename") await renameThreadDirect(s.sessionID)
+      else if (action === "move") await moveThreadDirect({ sessionID: s.sessionID })
       else if (action === "copy") await copyIdCmd(s.sessionID)
       else if (action === "delete") await deleteThreadDirect({ sessionID: s.sessionID })
     }
@@ -332,6 +386,7 @@ export default Plugin.define({
         { id: "session-tree.delete", title: "Дерево: удалить тред", palette: true, run: deleteThreadCmd },
         { id: "session-tree.rename-project", title: "Дерево: переименовать проект", palette: true, run: renameProjectCmd },
         { id: "session-tree.delete-project", title: "Дерево: удалить проект", palette: true, run: deleteProjectCmd },
+        { id: "session-tree.sidebar", title: "Дерево: показать/скрыть сайдбар", slash: { name: "tree-sidebar" }, palette: true, run: toggleSidebar },
         { id: "session-tree.refresh", title: "Дерево: обновить", palette: true, run: refreshCmd },
       ],
       bindings: [],

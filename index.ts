@@ -312,6 +312,72 @@ export default Plugin.define({
         return {}
       },
 
+      // Перенос треда в другой проект: папка (если была) переезжает, сессия перепривязывается.
+      moveThread: async (raw, context) => {
+        const input = raw as { sessionID: string; folder?: string; targetProject: string }
+        const target = insideProjectsRoot(input.targetProject)
+        if (!target) return context.error("invalid_path", "Проект вне каталога проектов OpenCode", { path: input.targetProject })
+
+        let slug = `thread-${Date.now()}`
+        let hasFolder = false
+        let srcDir: string | null = null
+        if (input.folder) {
+          const src = path.resolve(input.folder)
+          if (!insideProjectsRoot(src)) {
+            return context.error("invalid_path", "Исходная папка вне каталога проектов OpenCode", { path: src })
+          }
+          const st = await fs.lstat(src).catch(() => null)
+          if (!st || st.isSymbolicLink() || !st.isDirectory()) {
+            return context.error("invalid_path", "Папка треда не найдена", { path: src })
+          }
+          const marker = await (async () => {
+            try {
+              return JSON.parse(await fs.readFile(path.join(src, THREAD_MARKER), "utf8"))
+            } catch {
+              return null
+            }
+          })()
+          if (!marker || marker.sessionID !== input.sessionID) {
+            return context.error("marker_missing", "Нет маркера владения — перенос отменён", { folder: src })
+          }
+          slug = path.basename(src)
+          hasFolder = true
+          srcDir = src
+        }
+
+        // Уникальная подпапка в целевом проекте.
+        let dir = path.join(target, THREADS_DIR, slug)
+        let n = 2
+        while (true) {
+          try {
+            await fs.access(dir)
+            dir = path.join(target, THREADS_DIR, `${slug}-${n++}`)
+          } catch {
+            break
+          }
+        }
+
+        if (hasFolder && srcDir) {
+          await fs.mkdir(path.dirname(dir), { recursive: true })
+          await fs.rename(srcDir, dir)
+        } else {
+          // Тред «без проекта»: папки не было — создаём подпапку, история переезжает, файлы остаются.
+          await fs.mkdir(dir, { recursive: true })
+        }
+        await fs.writeFile(
+          path.join(dir, THREAD_MARKER),
+          JSON.stringify({ schema: 1, sessionID: input.sessionID, movedAt: new Date().toISOString() }, null, 2),
+        )
+        try {
+          await ctx.session.move({ sessionID: input.sessionID, directory: dir } as never)
+        } catch (e) {
+          // откат папки, чтобы не осталась осиротевшая
+          if (!hasFolder) await fs.rm(dir, { recursive: true, force: true })
+          throw e
+        }
+        return { folder: dir }
+      },
+
       createLoose: async () => {
         const title = `thread-${new Date().toISOString().slice(0, 16).replace("T", "-")}`
         const session = (await ctx.session.create({ title } as never)) as SessionLike
