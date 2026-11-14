@@ -1,17 +1,17 @@
 {
   "name": "opencode-session-tree",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Projects & threads tree for the OpenCode TUI sidebar: mouse + keyboard parity, auto project folders, full project wipe",
   "type": "module",
   "exports": {
     ".": "./index.ts",
-    "./tui": "./tui.tsx",
+    "./tui": "./dist/tui.js",
     "./rpc": "./rpc.ts"
   },
   "files": [
     "index.ts",
     "rpc.ts",
-    "tui.tsx",
+    "dist/tui.js",
     "tsconfig.json",
     "README.md",
     "SPEC.md",
@@ -34,5 +34,14 @@
     "sidebar",
     "sessions",
     "projects"
-  ]
+  ],
+  "devDependencies": {
+    "@opencode/plugin": "latest",
+    "@opentui/core": ">=0.6.6",
+    "@opentui/solid": ">=0.6.6",
+    "solid-js": ">=1.9.0"
+  },
+  "scripts": {
+    "build": "bun build.ts"
+  }
 }
