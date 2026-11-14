@@ -75,3 +75,24 @@ deleteThread → deleteProject (`removedSessions:1, removedFolder:true`, пап�
 ## Остаток (P1/P2)
 
 Курсорная навигация внутри панели, закрепление, фильтр `/`, `date-slug`, привязка «без проекта» к проекту, удалённый сервер.
+
+## Для разработки
+
+`package.json` сознательно **не содержит** `devDependencies` и `scripts` — OpenCode
+устанавливает git-плагины через внутренний npm, и они ломают подготовку git-зависимости.
+Для сборки используется Bun:
+
+```sh
+bun add -d @opencode/plugin @opentui/core '@opentui/solid>=0.6.6' 'solid-js>=1.9.0'
+bun build.ts        # компилирует tui.tsx -> dist/tui.js (Solid-JSX заранее)
+```
+
+После правок: bump версии в `package.json`, commit, push, затем локально:
+
+```sh
+opencode plugin remove github:zakras030997-byte/opencode-session-tree
+rm -rf ~/.cache/opencode/npm/git-opencode-session-tree-*
+opencode plugin add github:zakras030997-byte/opencode-session-tree
+```
+
+(Кэш npm и git-ref кэш держат старый коммит ~минуту — чистая переустановка надёжнее `plugin update`.)
