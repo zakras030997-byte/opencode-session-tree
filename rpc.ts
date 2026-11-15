@@ -198,6 +198,7 @@ export const TreeRpc = Rpc.define({
           sessionID: { type: "string" },
           folder: { type: "string" },
           targetProject: { type: "string" },
+          slug: { type: "string" },
         },
         required: ["sessionID", "targetProject"],
         additionalProperties: false,

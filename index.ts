@@ -321,6 +321,16 @@ export default Plugin.define({
         let slug = `thread-${Date.now()}`
         let hasFolder = false
         let srcDir: string | null = null
+        if (input.slug) {
+          // Осмысленное имя папки (спека: слаг из названия, кириллица допустима).
+          slug = input.slug
+            .toLowerCase()
+            .replace(/[\s_]+/g, "-")
+            .replace(/[^\p{L}\p{N}-]/gu, "")
+            .replace(/-{2,}/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 40) || slug
+        }
         if (input.folder) {
           const src = path.resolve(input.folder)
           if (!insideProjectsRoot(src)) {
