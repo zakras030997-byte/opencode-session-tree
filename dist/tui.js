@@ -815,6 +815,13 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
     let hoverName = null;
     let pressName = null;
     let pressY = -1;
+    let swallowClick = false;
+    const swallowUp = () => {
+      swallowClick = true;
+      queueMicrotask(() => {
+        swallowClick = false;
+      });
+    };
     const projectLabel = (p) => `${getExpanded().has(p.name) ? "\u25BE" : "\u25B8"} ${trunc(p.name, 26)} \xB7 ${p.threads.length} `;
     const paint = (el, content, fg) => {
       const row = el;
@@ -850,6 +857,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       paint(dragEl, `\u22EE ${trunc(project.name, 24)} \xB7 ${project.threads.length} `, muted);
     };
     const releaseDrag = () => {
+      swallowUp();
       pressName = null;
       pressY = -1;
       const project = dragName ? getTree().projects.find((p) => p.name === dragName) : undefined;
@@ -867,6 +875,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       });
     };
     const dropOn = async (project) => {
+      swallowUp();
       const name = dragName;
       dragName = null;
       dragEl = null;
@@ -915,7 +924,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       _$setProp(_el$2, "justifyContent", "center");
       _$setProp(_el$2, "onMouseDown", resetInteraction);
       _$setProp(_el$2, "onMouseUp", () => {
-        if (dragName)
+        if (dragName || swallowClick)
           return;
         newProject();
       });
@@ -955,7 +964,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                   projectMenu(project);
                   return;
                 }
-                if (dragName)
+                if (dragName || swallowClick)
                   return;
                 toggleExpanded(project.name);
               });
@@ -985,7 +994,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$insertNode(_el$10, _el$11);
               _$setProp(_el$10, "onMouseDown", resetInteraction);
               _$setProp(_el$10, "onMouseUp", () => {
-                if (dragName)
+                if (dragName || swallowClick)
                   return;
                 newThreadIn(project.path);
               });

@@ -1,4 +1,4 @@
-// TUI-часть opencode-session-tree (v0.8.2).
+// TUI-часть opencode-session-tree (v0.8.3).
 // Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
 // правый — меню), «+», перетаскивание проектов, тумблер сайдбара, moveThread, индикаторы running/unread.
 // Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
@@ -434,6 +434,16 @@ export default Plugin.define({
     let hoverName: string | null = null
     let pressName: string | null = null
     let pressY = -1
+    // Ядро после `drop` не выходит из обработки и отправляет `up` ещё и строке-цели.
+    // Без этого флага отпускание после перетаскивания читалось бы как клик и цель
+    // разворачивалась бы. Флаг живёт до конца синхронной доставки события.
+    let swallowClick = false
+    const swallowUp = () => {
+      swallowClick = true
+      queueMicrotask(() => {
+        swallowClick = false
+      })
+    }
 
     const projectLabel = (p: ProjectDto) =>
       `${getExpanded().has(p.name) ? "▾" : "▸"} ${trunc(p.name, 26)} · ${p.threads.length} `
@@ -474,6 +484,7 @@ export default Plugin.define({
     }
 
     const releaseDrag = () => {
+      swallowUp()
       pressName = null
       pressY = -1
       const project = dragName ? getTree().projects.find((p) => p.name === dragName) : undefined
@@ -491,6 +502,7 @@ export default Plugin.define({
       })
     }
     const dropOn = async (project: ProjectDto) => {
+      swallowUp()
       const name = dragName
       dragName = null
       dragEl = null
@@ -530,7 +542,7 @@ export default Plugin.define({
           justifyContent="center"
           onMouseDown={resetInteraction}
           onMouseUp={() => {
-            if (dragName) return
+            if (dragName || swallowClick) return
             void newProject()
           }}
         >
@@ -551,7 +563,7 @@ export default Plugin.define({
                         void projectMenu(project)
                         return
                       }
-                      if (dragName) return
+                      if (dragName || swallowClick) return
                       toggleExpanded(project.name)
                     }}
                     onMouseDrag={(e: unknown) => armDrag(e, project)}
@@ -579,7 +591,7 @@ export default Plugin.define({
                   <box
                     onMouseDown={resetInteraction}
                     onMouseUp={() => {
-                      if (dragName) return
+                      if (dragName || swallowClick) return
                       void newThreadIn(project.path)
                     }}
                     onMouseDrop={() => void dropOn(project)}

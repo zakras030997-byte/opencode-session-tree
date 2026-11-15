@@ -1,6 +1,6 @@
 {
   "name": "opencode-session-tree",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Projects & threads tree for the OpenCode TUI sidebar: mouse + keyboard parity, auto project folders, full project wipe",
   "type": "module",
   "exports": {
