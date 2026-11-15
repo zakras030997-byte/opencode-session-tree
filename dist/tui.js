@@ -921,6 +921,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       });
       _$insertNode(_el$3, _$createTextNode(`\u2500 \u041F\u0420\u041E\u0415\u041A\u0422\u042B \u2500`));
       _$setProp(_el$3, "fg", "yellow");
+      _$setProp(_el$3, "selectable", false);
       _$insert(_el$, _$createComponent(Show, {
         get when() {
           return t.projects.length > 0;
@@ -946,6 +947,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$insertNode(_el$0, _el$10);
               _$setProp(_el$0, "flexDirection", "row");
               _$setProp(_el$1, "fg", "#ff8c00");
+              _$setProp(_el$1, "selectable", false);
               _$setProp(_el$1, "onMouseDown", (e) => startPress(e, project.name));
               _$setProp(_el$1, "onMouseUp", (e) => {
                 if (isRightClick(e)) {
@@ -961,8 +963,12 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$setProp(_el$1, "onMouseDragEnd", releaseDrag);
               _$setProp(_el$1, "onMouseDrop", () => void dropOn(project));
               _$setProp(_el$1, "onMouseOver", (e) => {
-                if (!dragName || dragName === project.name)
+                if (!dragName)
                   return;
+                if (dragName === project.name) {
+                  hoverName = null;
+                  return;
+                }
                 hoverName = project.name;
                 paint(e.target, undefined, "yellow");
               });
@@ -988,6 +994,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$setProp(_el$10, "paddingRight", 1);
               _$insertNode(_el$11, _$createTextNode(`+`));
               _$setProp(_el$11, "fg", "yellow");
+              _$setProp(_el$11, "selectable", false);
               _$insert(_el$9, _$createComponent(Show, {
                 get when() {
                   return getExpanded().has(project.name);
@@ -1001,6 +1008,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                       const r = rowFor(th, undefined);
                       return (() => {
                         var _el$13 = _$createElement("text");
+                        _$setProp(_el$13, "selectable", false);
                         _$setProp(_el$13, "onMouseDown", (e) => {
                           resetInteraction();
                           if (isRightClick(e) || !th.sessionID)
@@ -1051,6 +1059,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               }, s);
               return (() => {
                 var _el$14 = _$createElement("text");
+                _$setProp(_el$14, "selectable", false);
                 _$setProp(_el$14, "onMouseDown", (e) => {
                   resetInteraction();
                   if (isRightClick(e))

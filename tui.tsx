@@ -1,4 +1,4 @@
-// TUI-часть opencode-session-tree (v0.8.1).
+// TUI-часть opencode-session-tree (v0.8.2).
 // Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
 // правый — меню), «+», перетаскивание проектов, тумблер сайдбара, moveThread, индикаторы running/unread.
 // Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
@@ -534,7 +534,7 @@ export default Plugin.define({
             void newProject()
           }}
         >
-          <text fg="yellow">{`─ ${HEADER} ─`}</text>
+          <text fg="yellow" selectable={false}>{`─ ${HEADER} ─`}</text>
         </box>
         <Show when={t.projects.length > 0} fallback={<text fg={muted}>  Нет проектов — «+» или /tree-project-new</text>}>
           <For each={t.projects}>
@@ -543,6 +543,7 @@ export default Plugin.define({
                 <box flexDirection="row">
                   <text
                     fg={ORANGE}
+                    selectable={false}
                     onMouseDown={(e: unknown) => startPress(e, project.name)}
                     onMouseUp={(e: unknown) => {
                       if (isRightClick(e)) {
@@ -557,7 +558,12 @@ export default Plugin.define({
                     onMouseDragEnd={releaseDrag}
                     onMouseDrop={() => void dropOn(project)}
                     onMouseOver={(e: unknown) => {
-                      if (!dragName || dragName === project.name) return
+                      if (!dragName) return
+                      // Возврат на собственную строку = отмена: цель сбрасываем.
+                      if (dragName === project.name) {
+                        hoverName = null
+                        return
+                      }
                       hoverName = project.name
                       paint((e as { target?: unknown }).target, undefined, "yellow")
                     }}
@@ -580,7 +586,7 @@ export default Plugin.define({
                     paddingLeft={1}
                     paddingRight={1}
                   >
-                    <text fg="yellow">+</text>
+                    <text fg="yellow" selectable={false}>+</text>
                   </box>
                 </box>
                 <Show when={getExpanded().has(project.name)}>
@@ -590,6 +596,7 @@ export default Plugin.define({
                       return (
                         <text
                           fg={r.fg}
+                          selectable={false}
                           onMouseDown={(e: unknown) => {
                             resetInteraction()
                             if (isRightClick(e) || !th.sessionID) return
@@ -621,6 +628,7 @@ export default Plugin.define({
                 return (
                   <text
                     fg={r.fg}
+                    selectable={false}
                     onMouseDown={(e: unknown) => {
                       resetInteraction()
                       if (isRightClick(e)) return
