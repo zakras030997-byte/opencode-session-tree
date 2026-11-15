@@ -1,4 +1,4 @@
-// Серверная часть local.session-tree (v0.4).
+// Серверная часть local.session-tree (v0.8: + порядок проектов файлом .session-tree-order.json).
 // Проекты живут в каталоге OpenCode (~/.../opencode/projects) и создаются плагином автоматически.
 import path from "node:path"
 import os from "node:os"
@@ -8,6 +8,9 @@ import { TreeRpc } from "./rpc"
 
 const THREAD_MARKER = ".session-tree-thread.json"
 const THREADS_DIR = "threads"
+// Порядок проектов, заданный вручную (drag в сайдбаре). Файл лежит в корне проектов,
+// скрыт точкой и не мешает листингу (плагин отбирает только каталоги).
+const ORDER_FILE = ".session-tree-order.json"
 
 type SessionLike = {
   id?: string
@@ -36,6 +39,56 @@ export default Plugin.define({
     const insideProjectsRoot = (p: string) => {
       const resolved = path.resolve(p)
       return resolved.startsWith(projectsRoot + path.sep) ? resolved : null
+    }
+
+    // --- Порядок проектов --------------------------------------------------
+
+    const orderPath = path.join(projectsRoot, ORDER_FILE)
+
+    const readOrder = async (): Promise<string[]> => {
+      try {
+        const raw = JSON.parse(await fs.readFile(orderPath, "utf8")) as { projects?: unknown }
+        if (!Array.isArray(raw?.projects)) return []
+        return raw.projects.filter((n): n is string => typeof n === "string" && n.length > 0)
+      } catch {
+        return []
+      }
+    }
+
+    const writeOrder = async (names: string[]) => {
+      const body = JSON.stringify({ schema: 1, projects: names }, null, 2) + "\n"
+      const tmp = `${orderPath}.tmp`
+      await fs.mkdir(projectsRoot, { recursive: true })
+      await fs.writeFile(tmp, body)
+      await fs.rename(tmp, orderPath)
+    }
+
+    // Имена из списка — в его порядке; всё, чего в списке нет, — следом по алфавиту.
+    const applyOrder = (names: string[], order: string[]) => {
+      const present = new Set(names)
+      const used = new Set<string>()
+      const kept: string[] = []
+      for (const name of order) {
+        if (present.has(name) && !used.has(name)) {
+          kept.push(name)
+          used.add(name)
+        }
+      }
+      return [...kept, ...names.filter((n) => !used.has(n))]
+    }
+
+    const projectNames = async (): Promise<string[]> => {
+      const dirents = await fs.readdir(projectsRoot, { withFileTypes: true })
+      return dirents
+        .filter((e) => e.isDirectory() && !e.isSymbolicLink())
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b))
+    }
+
+    const dropFromOrder = async (name: string) => {
+      const order = await readOrder()
+      if (!order.includes(name)) return
+      await writeOrder(order.filter((n) => n !== name)).catch(() => {})
     }
 
     const dirOf = (s: SessionLike, fallback: string) =>
@@ -82,11 +135,7 @@ export default Plugin.define({
       const projects: unknown[] = []
       let entries: string[] = []
       try {
-        const dirents = await fs.readdir(projectsRoot, { withFileTypes: true })
-        entries = dirents
-          .filter((e) => e.isDirectory() && !e.isSymbolicLink())
-          .map((e) => e.name)
-          .sort((a, b) => a.localeCompare(b))
+        entries = applyOrder(await projectNames(), await readOrder())
       } catch {
         await fs.mkdir(projectsRoot, { recursive: true }).catch(() => {})
       }
@@ -192,6 +241,13 @@ export default Plugin.define({
             /* сессия могла быть удалена */
           }
         }
+        // Порядок живёт по именам папок — переносим запись, чтобы место не потерялось.
+        const order = await readOrder()
+        const slot = order.indexOf(path.basename(oldPath))
+        if (slot >= 0) {
+          order[slot] = name
+          await writeOrder(order).catch(() => {})
+        }
         return buildTree() as never
       },
 
@@ -215,7 +271,36 @@ export default Plugin.define({
           }
         }
         await fs.rm(root, { recursive: true, force: true })
+        await dropFromOrder(path.basename(root))
         return { removedSessions, removedFolder: true }
+      },
+
+      // Перестановка проектов мышью: `path` встаёт на место `target`
+      // (при перетаскивании вниз — сразу за целью, вверх — перед ней).
+      reorderProject: async (raw, context) => {
+        const input = raw as { path: string; target: string }
+        const from = insideProjectsRoot(input.path)
+        const to = insideProjectsRoot(input.target)
+        if (!from || !to) return context.error("invalid_path", "Проект вне каталога проектов OpenCode", { path: input.path })
+        const fromName = path.basename(from)
+        const targetName = path.basename(to)
+        if (fromName === targetName) return buildTree() as never
+        let names: string[] = []
+        try {
+          names = applyOrder(await projectNames(), await readOrder())
+        } catch {
+          return context.error("not_found", "Каталог проектов недоступен", { path: projectsRoot })
+        }
+        const fromIdx = names.indexOf(fromName)
+        const toIdx = names.indexOf(targetName)
+        if (fromIdx < 0 || toIdx < 0) {
+          return context.error("not_found", "Проект не найден", { path: input.path })
+        }
+        const list = names.filter((n) => n !== fromName)
+        const targetIdx = list.indexOf(targetName)
+        list.splice(fromIdx < toIdx ? targetIdx + 1 : targetIdx, 0, fromName)
+        await writeOrder(list)
+        return buildTree() as never
       },
 
       createThread: async (raw, context) => {

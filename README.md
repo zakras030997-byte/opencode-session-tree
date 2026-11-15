@@ -38,6 +38,9 @@ opencode plugin add github:zakras030997-byte/opencode-session-tree
 - Левый клик по проекту — развернуть/свернуть; по треду — открыть.
 - **Правый клик** по проекту — меню: новый тред / переименовать / удалить (полная зачистка).
 - **Правый клик** по треду — меню: открыть / переименовать / удалить.
+- **Перетаскивание проекта** — зажмите строку проекта и отпустите над другой строкой: проект
+  встаёт на её место (вниз — под цель, вверх — над целью). Порядок запоминается в
+  `<projectsRoot>/.session-tree-order.json` и сохраняется между запусками.
 
 **Клавиатура** (полный паритет): палитра `Ctrl+P` → `session-tree.*`, слэш-команды `/tree`, `/tree-new`, `/tree-project-new`.
 
@@ -57,7 +60,7 @@ opencode plugin add github:zakras030997-byte/opencode-session-tree
 
 | Файл | Роль |
 |---|---|
-| `index.ts` | серверная часть: RPC `listTree/createProject/renameProject/deleteProject/createThread/deleteThread/...`, файловые операции |
+| `index.ts` | серверная часть: RPC `listTree/createProject/renameProject/deleteProject/reorderProject/createThread/deleteThread/...`, файловые операции |
 | `rpc.ts` | типизированный контракт |
 | `tui.tsx` | дерево в сайдбаре, клики, «+», меню, команды палитры |
 

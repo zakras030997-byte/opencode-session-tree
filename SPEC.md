@@ -167,6 +167,18 @@
 
 `"root": null` в `threads` — тред «без проекта». Миграции — по `schemaVersion`, без сброса.
 
+**Порядок проектов (v0.8)** хранится не в storage, а отдельным файлом рядом с проектами —
+его пишет серверная часть, потому что порядок нужен `buildTree` на сервере:
+
+```jsonc
+// <projectsRoot>/.session-tree-order.json
+{ "schema": 1, "projects": ["Bug Bounty — AlfaBit", "Картечь — Red Team"] }
+```
+
+Правило: имена из `projects` — в заданном порядке, остальные — следом по алфавиту. Запись
+атомарная (`tmp` + rename), неизвестные имена при чтении игнорируются, переименование проекта
+переносит запись на новое имя, удаление — вычищает.
+
 ## 06. Архитектура
 
 ```
@@ -185,7 +197,7 @@
 
 TUI-часть (документировано): `ui.slot("sidebar.content")`, `data.project/session.*`, `ui.router.navigate`, `ui.dialog.*`, `ui.toast.show`, `keymap.layer`, `storage.store/memory`, `theme`, `ui.format.path`, `client`.
 
-Серверная часть: RPC `threads.create/rename/delete/list` (+ `adoptThread` в P2); файловые операции через Node/Bun API в процессе сервера.
+Серверная часть: RPC `listTree/createProject/renameProject/deleteProject/reorderProject/createThread/deleteThread/renameThread/deleteSession/moveThread/createLoose` (+ `adoptThread` в P2); файловые операции через Node/Bun API в процессе сервера.
 
 > Шаг 0 перед кодом: сверить по `/openapi.json` и `build/plugins/server` точные имена `client.session.*`, схему создания сессии с `location`, форму RPC-контракта. До сверки — контрактные зависимости.
 
@@ -224,7 +236,11 @@ TUI-часть (документировано): `ui.slot("sidebar.content")`, `
 5. После удаления фокус на соседний тред, иначе `home`.
 
 **Прочее**
-- Сортировка: закреплённые, `order`, затем по последней активности; «Без проекта» — по активности.
+- Сортировка проектов: сначала порядок из `<projectsRoot>/.session-tree-order.json` (задаётся
+  перетаскиванием), затем всё, чего в списке нет, — по алфавиту в конце. Переименование
+  переносит запись на новое имя, удаление — вычищает. Для тредов внутри проекта порядок пока
+  файловый (`readdir`).
+- Треды «Без проекта» — по активности.
 - Ошибки сети: строка `!`, локальное состояние не меняется без подтверждения сервера.
 - Гонки: одна операция на тред, повторный клик игнорируется.
 

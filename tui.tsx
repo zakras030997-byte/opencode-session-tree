@@ -1,6 +1,6 @@
-// TUI-часть opencode-session-tree (v0.7.0).
+// TUI-часть opencode-session-tree (v0.8.0).
 // Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
-// правый — меню), «+», тумблер сайдбара, moveThread, индикаторы running/unread.
+// правый — меню), «+», перетаскивание проектов, тумблер сайдбара, moveThread, индикаторы running/unread.
 // Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, Show } from "solid-js"
@@ -424,6 +424,87 @@ export default Plugin.define({
     const muted = (context.theme as { text?: { muted?: string } }).text?.muted ?? context.theme.text.base
     const HEADER = "ПРОЕКТЫ"
 
+    // --- Перестановка проектов мышью ---------------------------------------
+    // Нативный drag/drop OpenTUI: «drag» приходит на строку проекта, «drop» — на строку,
+    // над которой отпустили. Подсветку меняем на месте, без перерисовки слота:
+    // перерисовка уничтожила бы перетаскиваемый элемент и drag бы прервался.
+
+    let dragName: string | null = null
+    let dragEl: { content?: unknown; fg?: unknown } | null = null
+    let hoverName: string | null = null
+    let pressName: string | null = null
+    let pressY = -1
+
+    const projectLabel = (p: ProjectDto) =>
+      `${getExpanded().has(p.name) ? "▾" : "▸"} ${trunc(p.name, 26)} · ${p.threads.length} `
+
+    const paint = (el: unknown, content?: string, fg?: string) => {
+      const row = el as { content?: unknown; fg?: unknown } | null | undefined
+      if (!row) return
+      try {
+        if (content !== undefined) row.content = content
+        if (fg !== undefined) row.fg = fg
+      } catch {
+        /* элемент уже пересоздан деревом */
+      }
+    }
+
+    const startPress = (e: unknown, name: string) => {
+      dragName = null
+      dragEl = null
+      hoverName = null
+      pressName = name
+      pressY = typeof (e as { y?: number })?.y === "number" ? ((e as { y: number }).y as number) : -1
+    }
+
+    const armDrag = (e: unknown, project: ProjectDto) => {
+      if (dragName || pressName !== project.name || pressY < 0) return
+      const y = (e as { y?: number })?.y
+      // Порог в одну строку: иначе обычный клик превращался бы в перетаскивание.
+      if (typeof y !== "number" || Math.abs(y - pressY) < 1) return
+      dragName = project.name
+      dragEl = (e as { target?: { content?: unknown; fg?: unknown } }).target ?? null
+      paint(dragEl, `⋮ ${trunc(project.name, 24)} · ${project.threads.length} `, muted)
+    }
+
+    const releaseDrag = () => {
+      pressName = null
+      pressY = -1
+      const project = dragName ? getTree().projects.find((p) => p.name === dragName) : undefined
+      if (project) paint(dragEl, projectLabel(project), ORANGE)
+      dragEl = null
+      // Страховка: drop приходит сразу после drag-end, но если его не будет —
+      // доводим перестановку по строке, над которой отпустили. Микротаск
+      // гарантирует, что drop успевает обработаться первым.
+      queueMicrotask(() => {
+        const over = hoverName
+        hoverName = null
+        if (!dragName || !over) return
+        const target = getTree().projects.find((p) => p.name === over)
+        if (target) void dropOn(target)
+      })
+    }
+
+    const dropOn = async (project: ProjectDto) => {
+      const name = dragName
+      dragName = null
+      dragEl = null
+      hoverName = null
+      pressName = null
+      pressY = -1
+      if (!name || name === project.name) return
+      const from = getTree().projects.find((p) => p.name === name)
+      if (!from) return
+      try {
+        await rpc().reorderProject({ path: from.path, target: project.path })
+        await refresh()
+        toastOk(`«${name}» — на месте «${project.name}»`)
+      } catch (e) {
+        toastError(e)
+        await refresh()
+      }
+    }
+
     const rowFor = (th: ThreadDto, loose: LooseDto | undefined) => {
       const sid = th.sessionID ?? loose?.sessionID ?? null
       const title = th.title ?? loose?.title ?? ""
@@ -436,7 +517,15 @@ export default Plugin.define({
 
     const renderTree = (t: Tree) => (
       <box flexDirection="column" marginTop={1}>
-        <box flexDirection="row" width="100%" justifyContent="center" onMouseUp={() => void newProject()}>
+        <box
+          flexDirection="row"
+          width="100%"
+          justifyContent="center"
+          onMouseUp={() => {
+            if (dragName) return
+            void newProject()
+          }}
+        >
           <text fg="yellow">{`─ ${HEADER} ─`}</text>
         </box>
         <Show when={t.projects.length > 0} fallback={<text fg={muted}>  Нет проектов — «+» или /tree-project-new</text>}>
@@ -448,16 +537,36 @@ export default Plugin.define({
                     fg={ORANGE}
                     onMouseDown={(e: unknown) => {
                       if (isRightClick(e)) return
-                      toggleExpanded(project.name)
+                      startPress(e, project.name)
                     }}
                     onMouseUp={(e: unknown) => {
+                      if (dragName) return
                       if (isRightClick(e)) void projectMenu(project)
+                      else toggleExpanded(project.name)
+                    }}
+                    onMouseDrag={(e: unknown) => armDrag(e, project)}
+                    onMouseDragEnd={releaseDrag}
+                    onMouseDrop={() => void dropOn(project)}
+                    onMouseOver={(e: unknown) => {
+                      if (!dragName || dragName === project.name) return
+                      hoverName = project.name
+                      paint((e as { target?: unknown }).target, undefined, "yellow")
+                    }}
+                    onMouseOut={(e: unknown) => {
+                      if (!dragName) return
+                      if (hoverName === project.name) hoverName = null
+                      if (dragName === project.name) return
+                      paint((e as { target?: unknown }).target, undefined, ORANGE)
                     }}
                   >
-                    {`${getExpanded().has(project.name) ? "▾" : "▸"} ${trunc(project.name, 26)} · ${project.threads.length} `}
+                    {projectLabel(project)}
                   </text>
                   <box
-                    onMouseUp={() => void newThreadIn(project.path)}
+                    onMouseUp={() => {
+                      if (dragName) return
+                      void newThreadIn(project.path)
+                    }}
+                    onMouseDrop={() => void dropOn(project)}
                     paddingLeft={1}
                     paddingRight={1}
                   >
@@ -472,12 +581,14 @@ export default Plugin.define({
                         <text
                           fg={r.fg}
                           onMouseDown={(e: unknown) => {
-                            if (isRightClick(e) || !th.sessionID) return
+                            if (isRightClick(e) || !th.sessionID || dragName) return
                             openSession(th.sessionID)
                           }}
                           onMouseUp={(e: unknown) => {
+                            if (dragName) return
                             if (isRightClick(e)) void threadMenu(project.path, th)
                           }}
+                          onMouseDrop={() => void dropOn(project)}
                         >
                           {`    ${r.marker} ${r.title}`}
                         </text>
@@ -499,12 +610,14 @@ export default Plugin.define({
                   <text
                     fg={r.fg}
                     onMouseDown={(e: unknown) => {
-                      if (isRightClick(e)) return
+                      if (isRightClick(e) || dragName) return
                       openSession(s.sessionID)
                     }}
                     onMouseUp={(e: unknown) => {
+                      if (dragName) return
                       if (isRightClick(e)) void looseMenu(s)
                     }}
+                    onMouseDrop={releaseDrag}
                   >
                     {`  ${r.marker} ${r.title}`}
                   </text>

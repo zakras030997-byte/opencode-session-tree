@@ -133,6 +133,18 @@ export const TreeRpc = Rpc.define({
       errors,
     },
 
+    // Перестановка проектов в сайдбаре (drag и клавиатура): путь встаёт на место target.
+    reorderProject: {
+      input: {
+        type: "object",
+        properties: { path: { type: "string" }, target: { type: "string" } },
+        required: ["path", "target"],
+        additionalProperties: false,
+      },
+      output: treeOutput,
+      errors,
+    },
+
     createThread: {
       input: {
         type: "object",

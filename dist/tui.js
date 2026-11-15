@@ -136,6 +136,16 @@ var TreeRpc = Rpc.define({
       },
       errors
     },
+    reorderProject: {
+      input: {
+        type: "object",
+        properties: { path: { type: "string" }, target: { type: "string" } },
+        required: ["path", "target"],
+        additionalProperties: false
+      },
+      output: treeOutput,
+      errors
+    },
     createThread: {
       input: {
         type: "object",
@@ -800,6 +810,81 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
     }));
     const muted = context.theme.text?.muted ?? context.theme.text.base;
     const HEADER = "\u041F\u0420\u041E\u0415\u041A\u0422\u042B";
+    let dragName = null;
+    let dragEl = null;
+    let hoverName = null;
+    let pressName = null;
+    let pressY = -1;
+    const projectLabel = (p) => `${getExpanded().has(p.name) ? "\u25BE" : "\u25B8"} ${trunc(p.name, 26)} \xB7 ${p.threads.length} `;
+    const paint = (el, content, fg) => {
+      const row = el;
+      if (!row)
+        return;
+      try {
+        if (content !== undefined)
+          row.content = content;
+        if (fg !== undefined)
+          row.fg = fg;
+      } catch {}
+    };
+    const startPress = (e, name) => {
+      dragName = null;
+      dragEl = null;
+      hoverName = null;
+      pressName = name;
+      pressY = typeof e?.y === "number" ? e.y : -1;
+    };
+    const armDrag = (e, project) => {
+      if (dragName || pressName !== project.name || pressY < 0)
+        return;
+      const y = e?.y;
+      if (typeof y !== "number" || Math.abs(y - pressY) < 1)
+        return;
+      dragName = project.name;
+      dragEl = e.target ?? null;
+      paint(dragEl, `\u22EE ${trunc(project.name, 24)} \xB7 ${project.threads.length} `, muted);
+    };
+    const releaseDrag = () => {
+      pressName = null;
+      pressY = -1;
+      const project = dragName ? getTree().projects.find((p) => p.name === dragName) : undefined;
+      if (project)
+        paint(dragEl, projectLabel(project), ORANGE);
+      dragEl = null;
+      queueMicrotask(() => {
+        const over = hoverName;
+        hoverName = null;
+        if (!dragName || !over)
+          return;
+        const target = getTree().projects.find((p) => p.name === over);
+        if (target)
+          dropOn(target);
+      });
+    };
+    const dropOn = async (project) => {
+      const name = dragName;
+      dragName = null;
+      dragEl = null;
+      hoverName = null;
+      pressName = null;
+      pressY = -1;
+      if (!name || name === project.name)
+        return;
+      const from = getTree().projects.find((p) => p.name === name);
+      if (!from)
+        return;
+      try {
+        await rpc().reorderProject({
+          path: from.path,
+          target: project.path
+        });
+        await refresh();
+        toastOk(`\xAB${name}\xBB \u2014 \u043D\u0430 \u043C\u0435\u0441\u0442\u0435 \xAB${project.name}\xBB`);
+      } catch (e) {
+        toastError(e);
+        await refresh();
+      }
+    };
     const rowFor = (th, loose) => {
       const sid = th.sessionID ?? loose?.sessionID ?? null;
       const title = th.title ?? loose?.title ?? "";
@@ -822,7 +907,11 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       _$setProp(_el$2, "flexDirection", "row");
       _$setProp(_el$2, "width", "100%");
       _$setProp(_el$2, "justifyContent", "center");
-      _$setProp(_el$2, "onMouseUp", () => void newProject());
+      _$setProp(_el$2, "onMouseUp", () => {
+        if (dragName)
+          return;
+        newProject();
+      });
       _$insertNode(_el$3, _$createTextNode(`\u2500 \u041F\u0420\u041E\u0415\u041A\u0422\u042B \u2500`));
       _$setProp(_el$3, "fg", "yellow");
       _$insert(_el$, _$createComponent(Show, {
@@ -853,15 +942,42 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$setProp(_el$1, "onMouseDown", (e) => {
                 if (isRightClick(e))
                   return;
-                toggleExpanded(project.name);
+                startPress(e, project.name);
               });
               _$setProp(_el$1, "onMouseUp", (e) => {
+                if (dragName)
+                  return;
                 if (isRightClick(e))
                   projectMenu(project);
+                else
+                  toggleExpanded(project.name);
               });
-              _$insert(_el$1, () => `${getExpanded().has(project.name) ? "\u25BE" : "\u25B8"} ${trunc(project.name, 26)} \xB7 ${project.threads.length} `);
+              _$setProp(_el$1, "onMouseDrag", (e) => armDrag(e, project));
+              _$setProp(_el$1, "onMouseDragEnd", releaseDrag);
+              _$setProp(_el$1, "onMouseDrop", () => void dropOn(project));
+              _$setProp(_el$1, "onMouseOver", (e) => {
+                if (!dragName || dragName === project.name)
+                  return;
+                hoverName = project.name;
+                paint(e.target, undefined, "yellow");
+              });
+              _$setProp(_el$1, "onMouseOut", (e) => {
+                if (!dragName)
+                  return;
+                if (hoverName === project.name)
+                  hoverName = null;
+                if (dragName === project.name)
+                  return;
+                paint(e.target, undefined, ORANGE);
+              });
+              _$insert(_el$1, () => projectLabel(project));
               _$insertNode(_el$10, _el$11);
-              _$setProp(_el$10, "onMouseUp", () => void newThreadIn(project.path));
+              _$setProp(_el$10, "onMouseUp", () => {
+                if (dragName)
+                  return;
+                newThreadIn(project.path);
+              });
+              _$setProp(_el$10, "onMouseDrop", () => void dropOn(project));
               _$setProp(_el$10, "paddingLeft", 1);
               _$setProp(_el$10, "paddingRight", 1);
               _$insertNode(_el$11, _$createTextNode(`+`));
@@ -880,14 +996,17 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                       return (() => {
                         var _el$13 = _$createElement("text");
                         _$setProp(_el$13, "onMouseDown", (e) => {
-                          if (isRightClick(e) || !th.sessionID)
+                          if (isRightClick(e) || !th.sessionID || dragName)
                             return;
                           openSession(th.sessionID);
                         });
                         _$setProp(_el$13, "onMouseUp", (e) => {
+                          if (dragName)
+                            return;
                           if (isRightClick(e))
                             threadMenu(project.path, th);
                         });
+                        _$setProp(_el$13, "onMouseDrop", () => void dropOn(project));
                         _$insert(_el$13, () => `    ${r.marker} ${r.title}`);
                         _$effect((_$p) => _$setProp(_el$13, "fg", r.fg, _$p));
                         return _el$13;
@@ -926,14 +1045,17 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               return (() => {
                 var _el$14 = _$createElement("text");
                 _$setProp(_el$14, "onMouseDown", (e) => {
-                  if (isRightClick(e))
+                  if (isRightClick(e) || dragName)
                     return;
                   openSession(s.sessionID);
                 });
                 _$setProp(_el$14, "onMouseUp", (e) => {
+                  if (dragName)
+                    return;
                   if (isRightClick(e))
                     looseMenu(s);
                 });
+                _$setProp(_el$14, "onMouseDrop", releaseDrag);
                 _$insert(_el$14, () => `  ${r.marker} ${r.title}`);
                 _$effect((_$p) => _$setProp(_el$14, "fg", r.fg, _$p));
                 return _el$14;
