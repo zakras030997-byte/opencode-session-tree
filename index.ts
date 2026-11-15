@@ -1,4 +1,4 @@
-// Серверная часть local.session-tree (v0.8: + порядок проектов файлом .session-tree-order.json).
+// Серверная часть local.session-tree (v0.9: + parentID/agent/createdAt для субагентов).
 // Проекты живут в каталоге OpenCode (~/.../opencode/projects) и создаются плагином автоматически.
 import path from "node:path"
 import os from "node:os"
@@ -17,6 +17,10 @@ type SessionLike = {
   sessionID?: string
   title?: string
   directory?: unknown
+  // Сессия субагента привязана к родительской; у корневых тредов поле пустое.
+  parentID?: string | null
+  agent?: string | null
+  time?: { created?: number }
 }
 
 const sid = (s: SessionLike | undefined) => (s ? ((s.id ?? s.sessionID) as string | undefined) : undefined)
@@ -160,15 +164,22 @@ export default Plugin.define({
             /* без маркера */
           }
           let title = slug
+          // Сведения о субагенте: чей это тред, каким агентом запущен, когда создан.
+          let parentSessionID: string | null = null
+          let agent: string | null = null
+          let createdAt: number | null = null
           if (sessionID) {
             try {
               const s = (await ctx.session.get({ sessionID })) as SessionLike
               title = s.title ?? slug
+              parentSessionID = typeof s.parentID === "string" && s.parentID ? s.parentID : null
+              agent = typeof s.agent === "string" && s.agent ? s.agent : null
+              createdAt = typeof s.time?.created === "number" ? s.time.created : null
             } catch {
               title = `${slug} (сессия удалена)`
             }
           }
-          threads.push({ folder, slug, sessionID, title })
+          threads.push({ folder, slug, sessionID, title, parentSessionID, agent, createdAt })
         }
         projects.push({
           name,

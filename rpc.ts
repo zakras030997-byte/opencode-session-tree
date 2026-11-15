@@ -1,16 +1,24 @@
 import { Rpc } from "@opencode/plugin/rpc"
 
-// RPC-контракт local.session-tree (v0.4: проекты живут в каталоге OpenCode, авто-привязка).
+// RPC-контракт local.session-tree (v0.9: + сведения о субагентах в треде).
+
+const nullableString = { anyOf: [{ type: "string" }, { type: "null" }] } as const
 
 const ThreadDto = {
   type: "object",
   properties: {
     folder: { type: "string" },
     slug: { type: "string" },
-    sessionID: { anyOf: [{ type: "string" }, { type: "null" }] },
+    sessionID: nullableString,
     title: { type: "string" },
+    // Родительская сессия: заполнена только у субагентских тредов.
+    parentSessionID: nullableString,
+    // Агент сессии: general / explore / build / plan и т.п.
+    agent: nullableString,
+    // Время создания сессии (ms) — порядок субагентов под родителем.
+    createdAt: { anyOf: [{ type: "integer" }, { type: "null" }] },
   },
-  required: ["folder", "slug", "sessionID", "title"],
+  required: ["folder", "slug", "sessionID", "title", "parentSessionID", "agent", "createdAt"],
   additionalProperties: false,
 }
 

@@ -1,6 +1,7 @@
-// TUI-часть opencode-session-tree (v0.8.3).
+// TUI-часть opencode-session-tree (v0.9.0).
 // Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
 // правый — меню), «+», перетаскивание проектов, тумблер сайдбара, moveThread, индикаторы running/unread.
+// Субагентские треды вложены под родительский и по умолчанию скрыты (бейдж «N↳», /tree-subagents).
 // Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, Show } from "solid-js"
@@ -9,7 +10,15 @@ import os from "node:os"
 import path from "node:path"
 import { TreeRpc } from "./rpc"
 
-type ThreadDto = { folder: string; slug: string; sessionID: string | null; title: string }
+type ThreadDto = {
+  folder: string
+  slug: string
+  sessionID: string | null
+  title: string
+  parentSessionID: string | null
+  agent: string | null
+  createdAt: number | null
+}
 type ProjectDto = { name: string; path: string; threads: ThreadDto[] }
 type LooseDto = { sessionID: string; title: string; directory: string }
 type Tree = { projectsRoot: string; projects: ProjectDto[]; loose: LooseDto[] }
@@ -27,6 +36,11 @@ export default Plugin.define({
     const [getExpanded, setExpanded] = createSignal<Set<string>>(new Set())
     const [getUnread, setUnread] = createSignal<Record<string, boolean>>({})
     const [getLive, setLive] = createSignal<Record<string, boolean>>({})
+    // Настройки живут в durable storage OpenCode: переживают перезапуск и
+    // синхронизируются между окнами TUI.
+    const [prefs, setPrefs] = context.storage.store("session-tree", {
+      initial: { showSubagents: false, expanded: [] as string[] },
+    })
     const currentSIDRef = { value: "" }
     let rerenderFn: (() => void) | null = null
     const rpc = () => context.client.rpc(TreeRpc)
@@ -98,6 +112,125 @@ export default Plugin.define({
       else next.add(name)
       setExpanded(next)
       rerenderFn?.()
+    }
+
+    // --- Субагенты --------------------------------------------------------
+    // Субагентская сессия имеет parentID. Такой тред показываем вложенным под родительским,
+    // по умолчанию — скрытым: у родителя остаётся бейдж «N↳». Раскрытие — клик по бейджу
+    // (по группе) или `/tree-subagents` (все сразу). Состояние — в prefs (durable storage).
+    // Группировка общая по всему дереву: бывает, что сессия субагента лежит в другом проекте,
+    // чем его родитель (тред перенесли) — он всё равно раскрывается у родителя.
+
+    type Node = { th: ThreadDto; projectPath: string }
+    type Row = {
+      th: ThreadDto
+      projectPath: string
+      depth: number
+      children: number
+      open: boolean
+      descendants: string[]
+    }
+    type Index = { kids: Map<string, Node[]>; nested: Set<string> }
+
+    const keyOf = (th: ThreadDto) => th.sessionID ?? th.folder
+
+    // Защита от петли в parentID: такой тред остаётся на верхнем уровне.
+    const inCycle = (bySid: Map<string, ThreadDto>, th: ThreadDto) => {
+      const trail = new Set<string>()
+      let cur: string | null | undefined = th.parentSessionID
+      while (cur) {
+        if (cur === th.sessionID) return true
+        if (trail.has(cur)) return false
+        trail.add(cur)
+        cur = bySid.get(cur)?.parentSessionID ?? null
+      }
+      return false
+    }
+
+    const buildIndex = (t: Tree): Index => {
+      const bySid = new Map<string, ThreadDto>()
+      for (const p of t.projects) for (const th of p.threads) if (th.sessionID) bySid.set(th.sessionID, th)
+      const kids = new Map<string, Node[]>()
+      const nested = new Set<string>()
+      for (const p of t.projects) {
+        for (const th of p.threads) {
+          const parent = th.parentSessionID
+          // Родителя нет в дереве (сессия удалена) — строка остаётся на верхнем уровне с «↳».
+          if (!parent || parent === th.sessionID || !bySid.has(parent) || inCycle(bySid, th)) continue
+          nested.add(keyOf(th))
+          const arr = kids.get(parent) ?? []
+          arr.push({ th, projectPath: p.path })
+          kids.set(parent, arr)
+        }
+      }
+      for (const arr of kids.values()) arr.sort((a, b) => (a.th.createdAt ?? 0) - (b.th.createdAt ?? 0))
+      return { kids, nested }
+    }
+
+    const isOpen = (th: ThreadDto) =>
+      prefs.showSubagents || (!!th.sessionID && prefs.expanded.includes(th.sessionID))
+
+    const threadRows = (project: ProjectDto, index: Index): Row[] => {
+      const rows: Row[] = []
+      const seen = new Set<string>()
+      const walk = (th: ThreadDto, projectPath: string, depth: number) => {
+        const key = keyOf(th)
+        if (seen.has(key)) return
+        seen.add(key)
+        const children = th.sessionID ? (index.kids.get(th.sessionID) ?? []) : []
+        const open = children.length > 0 && isOpen(th)
+        // Все вложенные сессии (для бейджа: скрытый субагент может работать или ждать ответа).
+        const descendants: string[] = []
+        const collect = (node: ThreadDto, guard: number) => {
+          if (guard > 8) return
+          for (const child of node.sessionID ? (index.kids.get(node.sessionID) ?? []) : []) {
+            if (child.th.sessionID) descendants.push(child.th.sessionID)
+            collect(child.th, guard + 1)
+          }
+        }
+        collect(th, 0)
+        // Глубже двух уровней не рисуем — и бейдж там не нужен: раскрывать некуда.
+        rows.push({
+          th,
+          projectPath,
+          depth,
+          children: depth >= 2 ? 0 : children.length,
+          open: depth >= 2 ? false : open,
+          descendants,
+        })
+        // Глубже двух уровней не уходим: сайдбар узкий, отступы съедают заголовок.
+        if (!open || depth >= 2) return
+        for (const child of children) walk(child.th, child.projectPath, depth + 1)
+      }
+      for (const th of project.threads) {
+        if (index.nested.has(keyOf(th))) continue
+        walk(th, project.path, 0)
+      }
+      return rows
+    }
+
+    const toggleSubagents = async (th: ThreadDto) => {
+      if (!th.sessionID) return
+      const sid = th.sessionID
+      await setPrefs((draft) => {
+        const at = draft.expanded.indexOf(sid)
+        if (at >= 0) draft.expanded.splice(at, 1)
+        else draft.expanded.push(sid)
+      })
+      rerenderFn?.()
+    }
+
+    const toggleSubagentsAll = async () => {
+      const next = !prefs.showSubagents
+      await setPrefs((draft) => {
+        draft.showSubagents = next
+      })
+      rerenderFn?.()
+      context.ui.toast.show({
+        title: "session-tree",
+        message: next ? "Субагенты показаны" : "Субагенты скрыты (бейдж «N↳» у родителя)",
+        variant: "info",
+      })
     }
 
     // --- Диалоги выбора ---------------------------------------------------
@@ -355,21 +488,35 @@ export default Plugin.define({
         title: project.name,
         options: [
           { title: "Новый тред", value: "new", description: "threads/<имя>/ + сессия" },
+          {
+            title: prefs.showSubagents ? "Скрыть субагентов" : "Показать субагентов",
+            value: "subagents",
+            description: "треды, запущенные агентами",
+          },
           { title: "Переименовать проект", value: "rename" },
           { title: "Удалить проект (полная зачистка)", value: "delete" },
         ],
       })
       if (action === "new") await newThreadIn(project.path)
+      else if (action === "subagents") await toggleSubagentsAll()
       else if (action === "rename") await renameProjectDirect(project.path)
       else if (action === "delete") await deleteProjectDirect(project.path)
     }
 
-    const threadMenu = async (projectPath: string, th: ThreadDto) => {
+    const threadMenu = async (projectPath: string, th: ThreadDto, children = 0) => {
       if (!th.sessionID) return
       const action = await context.ui.dialog.select({
         title: th.title,
         options: [
           { title: "Открыть", value: "open" },
+          ...(children > 0
+            ? [
+                {
+                  title: isOpen(th) ? `Скрыть субагентов (${children})` : `Показать субагентов (${children})`,
+                  value: "subagents",
+                },
+              ]
+            : []),
           { title: "Переименовать", value: "rename" },
           { title: "Переместить в другой проект…", value: "move" },
           { title: "Копировать ID", value: "copy" },
@@ -377,6 +524,7 @@ export default Plugin.define({
         ],
       })
       if (action === "open") openSession(th.sessionID)
+      else if (action === "subagents") await toggleSubagents(th)
       else if (action === "rename") await renameThreadDirect(th.sessionID)
       else if (action === "move") await moveThreadDirect({ projectPath, folder: th.folder, sessionID: th.sessionID })
       else if (action === "copy") await copyIdCmd(th.sessionID)
@@ -414,6 +562,7 @@ export default Plugin.define({
         { id: "session-tree.rename-project", title: "Дерево: переименовать проект", palette: true, run: renameProjectCmd },
         { id: "session-tree.delete-project", title: "Дерево: удалить проект", palette: true, run: deleteProjectCmd },
         { id: "session-tree.sidebar", title: "Дерево: показать/скрыть сайдбар", slash: { name: "tree-sidebar" }, palette: true, run: toggleSidebar },
+        { id: "session-tree.subagents", title: "Дерево: субагенты показать/скрыть", slash: { name: "tree-subagents" }, palette: true, run: toggleSubagentsAll },
         { id: "session-tree.refresh", title: "Дерево: обновить", palette: true, run: refreshCmd },
       ],
       bindings: [],
@@ -534,7 +683,38 @@ export default Plugin.define({
       return { marker, fg, title: trunc(title, 30) }
     }
 
-    const renderTree = (t: Tree) => (
+    // Строка треда: отступ по глубине, «↳» для субагентов, маркер работы и имя агента.
+    const threadLabel = (row: Row) => {
+      const th = row.th
+      const sid = th.sessionID
+      const live = sid ? !!getLive()[sid] : false
+      const unread = sid ? !!getUnread()[sid] : false
+      // Субагент без родителя в этом проекте (удалён / другой проект) — без отступа, но с «↳».
+      const orphan = row.depth === 0 && !!th.parentSessionID
+      const sub = row.depth > 0 || orphan
+      const fg = live ? GREEN : unread ? ORANGE : !sid ? muted : sub ? muted : context.theme.text.base
+      const indent = "    " + "  ".repeat(row.depth)
+      const glyph = row.depth > 0 ? `${"↳".repeat(row.depth)} ` : orphan ? "↳ " : ""
+      // У субагента маркер показываем только когда есть что сообщить (работает / не прочитан).
+      const marker = sub ? (live ? "● " : unread ? "◉ " : "") : `${live ? "●" : unread ? "◉" : "·"} `
+      const agent = sub && th.agent ? ` · ${trunc(th.agent, 10)}` : ""
+      const title = trunc(th.title, sub ? 20 : 26)
+      return { fg, label: `${indent}${glyph}${marker}${title}${agent}` }
+    }
+
+    // Бейдж группы субагентов: состояние группы важнее её размера — работающий
+    // или непрочитанный скрытый субагент подсвечивается прямо у родителя.
+    const badgeFor = (row: Row) => {
+      if (row.children === 0) return null
+      const live = row.descendants.some((id) => !!getLive()[id])
+      const unread = row.descendants.some((id) => !!getUnread()[id])
+      const glyph = live ? "●" : unread ? "◉" : row.open ? "▾" : "▸"
+      return { text: `${glyph} ${row.children}↳`, fg: live ? GREEN : unread ? ORANGE : muted }
+    }
+
+    const renderTree = (t: Tree) => {
+      const index = buildIndex(t)
+      return (
       <box flexDirection="column" marginTop={1}>
         <box
           flexDirection="row"
@@ -602,27 +782,46 @@ export default Plugin.define({
                   </box>
                 </box>
                 <Show when={getExpanded().has(project.name)}>
-                  <For each={project.threads}>
-                    {(th) => {
-                      const r = rowFor(th, undefined)
+                  <For each={threadRows(project, index)}>
+                    {(row) => {
+                      const r = threadLabel(row)
+                      const badge = badgeFor(row)
+                      const sid = row.th.sessionID
                       return (
-                        <text
-                          fg={r.fg}
-                          selectable={false}
-                          onMouseDown={(e: unknown) => {
-                            resetInteraction()
-                            if (isRightClick(e) || !th.sessionID) return
-                            openSession(th.sessionID)
-                          }}
-                          onMouseUp={(e: unknown) => {
-                            if (!isRightClick(e)) return
-                            resetInteraction()
-                            void threadMenu(project.path, th)
-                          }}
-                          onMouseDrop={() => void dropOn(project)}
-                        >
-                          {`    ${r.marker} ${r.title}`}
-                        </text>
+                        <box flexDirection="row" width="100%" onMouseDrop={() => void dropOn(project)}>
+                          <text
+                            fg={r.fg}
+                            selectable={false}
+                            onMouseDown={(e: unknown) => {
+                              resetInteraction()
+                              if (isRightClick(e) || !sid) return
+                              openSession(sid)
+                            }}
+                            onMouseUp={(e: unknown) => {
+                              if (!isRightClick(e)) return
+                              resetInteraction()
+                              void threadMenu(row.projectPath, row.th, row.children)
+                            }}
+                          >
+                            {r.label}
+                          </text>
+                          <Show when={badge}>
+                            {(b) => (
+                              <box
+                                paddingLeft={1}
+                                onMouseDown={resetInteraction}
+                                onMouseUp={() => {
+                                  if (dragName || swallowClick) return
+                                  void toggleSubagents(row.th)
+                                }}
+                              >
+                                <text fg={b().fg} selectable={false}>
+                                  {b().text}
+                                </text>
+                              </box>
+                            )}
+                          </Show>
+                        </box>
                       )
                     }}
                   </For>
@@ -636,7 +835,18 @@ export default Plugin.define({
             <text fg={muted}>{`БЕЗ ПРОЕКТА ${t.loose.length}`}</text>
             <For each={t.loose}>
               {(s) => {
-                const r = rowFor({ folder: "", slug: "", sessionID: s.sessionID, title: s.title }, s)
+                const r = rowFor(
+                  {
+                    folder: "",
+                    slug: "",
+                    sessionID: s.sessionID,
+                    title: s.title,
+                    parentSessionID: null,
+                    agent: null,
+                    createdAt: null,
+                  },
+                  s,
+                )
                 return (
                   <text
                     fg={r.fg}
@@ -661,7 +871,8 @@ export default Plugin.define({
           </box>
         </Show>
       </box>
-    )
+      )
+    }
 
     let slotReg: (() => void) | null = null
     rerenderFn = () => {

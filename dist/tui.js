@@ -15,15 +15,19 @@ import path from "path";
 
 // rpc.ts
 import { Rpc } from "@opencode/plugin/rpc";
+var nullableString = { anyOf: [{ type: "string" }, { type: "null" }] };
 var ThreadDto = {
   type: "object",
   properties: {
     folder: { type: "string" },
     slug: { type: "string" },
-    sessionID: { anyOf: [{ type: "string" }, { type: "null" }] },
-    title: { type: "string" }
+    sessionID: nullableString,
+    title: { type: "string" },
+    parentSessionID: nullableString,
+    agent: nullableString,
+    createdAt: { anyOf: [{ type: "integer" }, { type: "null" }] }
   },
-  required: ["folder", "slug", "sessionID", "title"],
+  required: ["folder", "slug", "sessionID", "title", "parentSessionID", "agent", "createdAt"],
   additionalProperties: false
 };
 var ProjectDto = {
@@ -250,6 +254,12 @@ var tui_default = Plugin.define({
     const [getExpanded, setExpanded] = createSignal(new Set);
     const [getUnread, setUnread] = createSignal({});
     const [getLive, setLive] = createSignal({});
+    const [prefs, setPrefs] = context.storage.store("session-tree", {
+      initial: {
+        showSubagents: false,
+        expanded: []
+      }
+    });
     const currentSIDRef = {
       value: ""
     };
@@ -325,6 +335,103 @@ var tui_default = Plugin.define({
         next.add(name);
       setExpanded(next);
       rerenderFn?.();
+    };
+    const keyOf = (th) => th.sessionID ?? th.folder;
+    const buildIndex = (t) => {
+      const bySid = new Map;
+      for (const p of t.projects)
+        for (const th of p.threads)
+          if (th.sessionID)
+            bySid.set(th.sessionID, th);
+      const kids = new Map;
+      const nested = new Set;
+      for (const p of t.projects) {
+        for (const th of p.threads) {
+          const parent = th.parentSessionID;
+          if (!parent || parent === th.sessionID || !bySid.has(parent))
+            continue;
+          nested.add(keyOf(th));
+          const arr = kids.get(parent) ?? [];
+          arr.push({
+            th,
+            projectPath: p.path
+          });
+          kids.set(parent, arr);
+        }
+      }
+      for (const arr of kids.values())
+        arr.sort((a, b) => (a.th.createdAt ?? 0) - (b.th.createdAt ?? 0));
+      return {
+        kids,
+        nested
+      };
+    };
+    const isOpen = (th) => prefs.showSubagents || !!th.sessionID && prefs.expanded.includes(th.sessionID);
+    const threadRows = (project, index) => {
+      const rows = [];
+      const seen = new Set;
+      const walk = (th, projectPath, depth) => {
+        const key = keyOf(th);
+        if (seen.has(key))
+          return;
+        seen.add(key);
+        const children = th.sessionID ? index.kids.get(th.sessionID) ?? [] : [];
+        const open = children.length > 0 && isOpen(th);
+        const descendants = [];
+        const collect = (node, guard) => {
+          if (guard > 8)
+            return;
+          for (const child of node.sessionID ? index.kids.get(node.sessionID) ?? [] : []) {
+            if (child.th.sessionID)
+              descendants.push(child.th.sessionID);
+            collect(child.th, guard + 1);
+          }
+        };
+        collect(th, 0);
+        rows.push({
+          th,
+          projectPath,
+          depth,
+          children: children.length,
+          open,
+          descendants
+        });
+        if (!open || depth >= 2)
+          return;
+        for (const child of children)
+          walk(child.th, child.projectPath, depth + 1);
+      };
+      for (const th of project.threads) {
+        if (index.nested.has(keyOf(th)))
+          continue;
+        walk(th, project.path, 0);
+      }
+      return rows;
+    };
+    const toggleSubagents = async (th) => {
+      if (!th.sessionID)
+        return;
+      const sid = th.sessionID;
+      await setPrefs((draft) => {
+        const at = draft.expanded.indexOf(sid);
+        if (at >= 0)
+          draft.expanded.splice(at, 1);
+        else
+          draft.expanded.push(sid);
+      });
+      rerenderFn?.();
+    };
+    const toggleSubagentsAll = async () => {
+      const next = !prefs.showSubagents;
+      await setPrefs((draft) => {
+        draft.showSubagents = next;
+      });
+      rerenderFn?.();
+      context.ui.toast.show({
+        title: "session-tree",
+        message: next ? "\u0421\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u044B \u043F\u043E\u043A\u0430\u0437\u0430\u043D\u044B" : "\u0421\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u044B \u0441\u043A\u0440\u044B\u0442\u044B (\u0431\u0435\u0439\u0434\u0436 \xABN\u21B3\xBB \u0443 \u0440\u043E\u0434\u0438\u0442\u0435\u043B\u044F)",
+        variant: "info"
+      });
     };
     const pickProject = async () => {
       const projects = getTree().projects;
@@ -656,6 +763,10 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
           value: "new",
           description: "threads/<\u0438\u043C\u044F>/ + \u0441\u0435\u0441\u0441\u0438\u044F"
         }, {
+          title: prefs.showSubagents ? "\u0421\u043A\u0440\u044B\u0442\u044C \u0441\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u043E\u0432" : "\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0441\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u043E\u0432",
+          value: "subagents",
+          description: "\u0442\u0440\u0435\u0434\u044B, \u0437\u0430\u043F\u0443\u0449\u0435\u043D\u043D\u044B\u0435 \u0430\u0433\u0435\u043D\u0442\u0430\u043C\u0438"
+        }, {
           title: "\u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u0442\u044C \u043F\u0440\u043E\u0435\u043A\u0442",
           value: "rename"
         }, {
@@ -665,12 +776,14 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       });
       if (action === "new")
         await newThreadIn(project.path);
+      else if (action === "subagents")
+        await toggleSubagentsAll();
       else if (action === "rename")
         await renameProjectDirect(project.path);
       else if (action === "delete")
         await deleteProjectDirect(project.path);
     };
-    const threadMenu = async (projectPath, th) => {
+    const threadMenu = async (projectPath, th, children = 0) => {
       if (!th.sessionID)
         return;
       const action = await context.ui.dialog.select({
@@ -678,7 +791,10 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         options: [{
           title: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C",
           value: "open"
-        }, {
+        }, ...children > 0 ? [{
+          title: isOpen(th) ? `\u0421\u043A\u0440\u044B\u0442\u044C \u0441\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u043E\u0432 (${children})` : `\u041F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u0441\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u043E\u0432 (${children})`,
+          value: "subagents"
+        }] : [], {
           title: "\u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u0442\u044C",
           value: "rename"
         }, {
@@ -694,6 +810,8 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       });
       if (action === "open")
         openSession(th.sessionID);
+      else if (action === "subagents")
+        await toggleSubagents(th);
       else if (action === "rename")
         await renameThreadDirect(th.sessionID);
       else if (action === "move")
@@ -800,6 +918,14 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         },
         palette: true,
         run: toggleSidebar
+      }, {
+        id: "session-tree.subagents",
+        title: "\u0414\u0435\u0440\u0435\u0432\u043E: \u0441\u0443\u0431\u0430\u0433\u0435\u043D\u0442\u044B \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C/\u0441\u043A\u0440\u044B\u0442\u044C",
+        slash: {
+          name: "tree-subagents"
+        },
+        palette: true,
+        run: toggleSubagentsAll
       }, {
         id: "session-tree.refresh",
         title: "\u0414\u0435\u0440\u0435\u0432\u043E: \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C",
@@ -913,186 +1039,244 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         title: trunc(title, 30)
       };
     };
-    const renderTree = (t) => (() => {
-      var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text");
-      _$insertNode(_el$, _el$2);
-      _$setProp(_el$, "flexDirection", "column");
-      _$setProp(_el$, "marginTop", 1);
-      _$insertNode(_el$2, _el$3);
-      _$setProp(_el$2, "flexDirection", "row");
-      _$setProp(_el$2, "width", "100%");
-      _$setProp(_el$2, "justifyContent", "center");
-      _$setProp(_el$2, "onMouseDown", resetInteraction);
-      _$setProp(_el$2, "onMouseUp", () => {
-        if (dragName || swallowClick)
-          return;
-        newProject();
-      });
-      _$insertNode(_el$3, _$createTextNode(`\u2500 \u041F\u0420\u041E\u0415\u041A\u0422\u042B \u2500`));
-      _$setProp(_el$3, "fg", "yellow");
-      _$setProp(_el$3, "selectable", false);
-      _$insert(_el$, _$createComponent(Show, {
-        get when() {
-          return t.projects.length > 0;
-        },
-        get fallback() {
-          return (() => {
-            var _el$7 = _$createElement("text");
-            _$insertNode(_el$7, _$createTextNode(` \u041D\u0435\u0442 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432 \u2014 \xAB+\xBB \u0438\u043B\u0438 /tree-project-new`));
-            _$setProp(_el$7, "fg", muted);
-            return _el$7;
-          })();
-        },
-        get children() {
-          return _$createComponent(For, {
-            get each() {
-              return t.projects;
-            },
-            children: (project) => (() => {
-              var _el$9 = _$createElement("box"), _el$0 = _$createElement("box"), _el$1 = _$createElement("text"), _el$10 = _$createElement("box"), _el$11 = _$createElement("text");
-              _$insertNode(_el$9, _el$0);
-              _$setProp(_el$9, "flexDirection", "column");
-              _$insertNode(_el$0, _el$1);
-              _$insertNode(_el$0, _el$10);
-              _$setProp(_el$0, "flexDirection", "row");
-              _$setProp(_el$1, "fg", "#ff8c00");
-              _$setProp(_el$1, "selectable", false);
-              _$setProp(_el$1, "onMouseDown", (e) => startPress(e, project.name));
-              _$setProp(_el$1, "onMouseUp", (e) => {
-                if (isRightClick(e)) {
-                  resetInteraction();
-                  projectMenu(project);
-                  return;
-                }
-                if (dragName || swallowClick)
-                  return;
-                toggleExpanded(project.name);
-              });
-              _$setProp(_el$1, "onMouseDrag", (e) => armDrag(e, project));
-              _$setProp(_el$1, "onMouseDragEnd", releaseDrag);
-              _$setProp(_el$1, "onMouseDrop", () => void dropOn(project));
-              _$setProp(_el$1, "onMouseOver", (e) => {
-                if (!dragName)
-                  return;
-                if (dragName === project.name) {
-                  hoverName = null;
-                  return;
-                }
-                hoverName = project.name;
-                paint(e.target, undefined, "yellow");
-              });
-              _$setProp(_el$1, "onMouseOut", (e) => {
-                if (!dragName)
-                  return;
-                if (hoverName === project.name)
-                  hoverName = null;
-                if (dragName === project.name)
-                  return;
-                paint(e.target, undefined, ORANGE);
-              });
-              _$insert(_el$1, () => projectLabel(project));
-              _$insertNode(_el$10, _el$11);
-              _$setProp(_el$10, "onMouseDown", resetInteraction);
-              _$setProp(_el$10, "onMouseUp", () => {
-                if (dragName || swallowClick)
-                  return;
-                newThreadIn(project.path);
-              });
-              _$setProp(_el$10, "onMouseDrop", () => void dropOn(project));
-              _$setProp(_el$10, "paddingLeft", 1);
-              _$setProp(_el$10, "paddingRight", 1);
-              _$insertNode(_el$11, _$createTextNode(`+`));
-              _$setProp(_el$11, "fg", "yellow");
-              _$setProp(_el$11, "selectable", false);
-              _$insert(_el$9, _$createComponent(Show, {
-                get when() {
-                  return getExpanded().has(project.name);
-                },
-                get children() {
-                  return _$createComponent(For, {
-                    get each() {
-                      return project.threads;
-                    },
-                    children: (th) => {
-                      const r = rowFor(th, undefined);
-                      return (() => {
-                        var _el$13 = _$createElement("text");
-                        _$setProp(_el$13, "selectable", false);
-                        _$setProp(_el$13, "onMouseDown", (e) => {
-                          resetInteraction();
-                          if (isRightClick(e) || !th.sessionID)
-                            return;
-                          openSession(th.sessionID);
-                        });
-                        _$setProp(_el$13, "onMouseUp", (e) => {
-                          if (!isRightClick(e))
-                            return;
-                          resetInteraction();
-                          threadMenu(project.path, th);
-                        });
-                        _$setProp(_el$13, "onMouseDrop", () => void dropOn(project));
-                        _$insert(_el$13, () => `    ${r.marker} ${r.title}`);
-                        _$effect((_$p) => _$setProp(_el$13, "fg", r.fg, _$p));
-                        return _el$13;
-                      })();
-                    }
+    const threadLabel = (row) => {
+      const th = row.th;
+      const sid = th.sessionID;
+      const live = sid ? !!getLive()[sid] : false;
+      const unread = sid ? !!getUnread()[sid] : false;
+      const orphan = row.depth === 0 && !!th.parentSessionID;
+      const sub = row.depth > 0 || orphan;
+      const fg = live ? GREEN : unread ? ORANGE : !sid ? muted : sub ? muted : context.theme.text.base;
+      const indent = "    " + "  ".repeat(row.depth);
+      const glyph = row.depth > 0 ? `${"\u21B3".repeat(row.depth)} ` : orphan ? "\u21B3 " : "";
+      const marker = sub ? live ? "\u25CF " : unread ? "\u25C9 " : "" : `${live ? "\u25CF" : unread ? "\u25C9" : "\xB7"} `;
+      const agent = sub && th.agent ? ` \xB7 ${trunc(th.agent, 10)}` : "";
+      const title = trunc(th.title, sub ? 20 : 26);
+      return {
+        fg,
+        label: `${indent}${glyph}${marker}${title}${agent}`
+      };
+    };
+    const badgeFor = (row) => {
+      if (row.children === 0)
+        return null;
+      const live = row.descendants.some((id) => !!getLive()[id]);
+      const unread = row.descendants.some((id) => !!getUnread()[id]);
+      const glyph = live ? "\u25CF" : unread ? "\u25C9" : row.open ? "\u25BE" : "\u25B8";
+      return {
+        text: `${glyph} ${row.children}\u21B3`,
+        fg: live ? GREEN : unread ? ORANGE : muted
+      };
+    };
+    const renderTree = (t) => {
+      const index = buildIndex(t);
+      return (() => {
+        var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text");
+        _$insertNode(_el$, _el$2);
+        _$setProp(_el$, "flexDirection", "column");
+        _$setProp(_el$, "marginTop", 1);
+        _$insertNode(_el$2, _el$3);
+        _$setProp(_el$2, "flexDirection", "row");
+        _$setProp(_el$2, "width", "100%");
+        _$setProp(_el$2, "justifyContent", "center");
+        _$setProp(_el$2, "onMouseDown", resetInteraction);
+        _$setProp(_el$2, "onMouseUp", () => {
+          if (dragName || swallowClick)
+            return;
+          newProject();
+        });
+        _$insertNode(_el$3, _$createTextNode(`\u2500 \u041F\u0420\u041E\u0415\u041A\u0422\u042B \u2500`));
+        _$setProp(_el$3, "fg", "yellow");
+        _$setProp(_el$3, "selectable", false);
+        _$insert(_el$, _$createComponent(Show, {
+          get when() {
+            return t.projects.length > 0;
+          },
+          get fallback() {
+            return (() => {
+              var _el$7 = _$createElement("text");
+              _$insertNode(_el$7, _$createTextNode(` \u041D\u0435\u0442 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432 \u2014 \xAB+\xBB \u0438\u043B\u0438 /tree-project-new`));
+              _$setProp(_el$7, "fg", muted);
+              return _el$7;
+            })();
+          },
+          get children() {
+            return _$createComponent(For, {
+              get each() {
+                return t.projects;
+              },
+              children: (project) => (() => {
+                var _el$9 = _$createElement("box"), _el$0 = _$createElement("box"), _el$1 = _$createElement("text"), _el$10 = _$createElement("box"), _el$11 = _$createElement("text");
+                _$insertNode(_el$9, _el$0);
+                _$setProp(_el$9, "flexDirection", "column");
+                _$insertNode(_el$0, _el$1);
+                _$insertNode(_el$0, _el$10);
+                _$setProp(_el$0, "flexDirection", "row");
+                _$setProp(_el$1, "fg", "#ff8c00");
+                _$setProp(_el$1, "selectable", false);
+                _$setProp(_el$1, "onMouseDown", (e) => startPress(e, project.name));
+                _$setProp(_el$1, "onMouseUp", (e) => {
+                  if (isRightClick(e)) {
+                    resetInteraction();
+                    projectMenu(project);
+                    return;
+                  }
+                  if (dragName || swallowClick)
+                    return;
+                  toggleExpanded(project.name);
+                });
+                _$setProp(_el$1, "onMouseDrag", (e) => armDrag(e, project));
+                _$setProp(_el$1, "onMouseDragEnd", releaseDrag);
+                _$setProp(_el$1, "onMouseDrop", () => void dropOn(project));
+                _$setProp(_el$1, "onMouseOver", (e) => {
+                  if (!dragName)
+                    return;
+                  if (dragName === project.name) {
+                    hoverName = null;
+                    return;
+                  }
+                  hoverName = project.name;
+                  paint(e.target, undefined, "yellow");
+                });
+                _$setProp(_el$1, "onMouseOut", (e) => {
+                  if (!dragName)
+                    return;
+                  if (hoverName === project.name)
+                    hoverName = null;
+                  if (dragName === project.name)
+                    return;
+                  paint(e.target, undefined, ORANGE);
+                });
+                _$insert(_el$1, () => projectLabel(project));
+                _$insertNode(_el$10, _el$11);
+                _$setProp(_el$10, "onMouseDown", resetInteraction);
+                _$setProp(_el$10, "onMouseUp", () => {
+                  if (dragName || swallowClick)
+                    return;
+                  newThreadIn(project.path);
+                });
+                _$setProp(_el$10, "onMouseDrop", () => void dropOn(project));
+                _$setProp(_el$10, "paddingLeft", 1);
+                _$setProp(_el$10, "paddingRight", 1);
+                _$insertNode(_el$11, _$createTextNode(`+`));
+                _$setProp(_el$11, "fg", "yellow");
+                _$setProp(_el$11, "selectable", false);
+                _$insert(_el$9, _$createComponent(Show, {
+                  get when() {
+                    return getExpanded().has(project.name);
+                  },
+                  get children() {
+                    return _$createComponent(For, {
+                      get each() {
+                        return threadRows(project, index);
+                      },
+                      children: (row) => {
+                        const r = threadLabel(row);
+                        const badge = badgeFor(row);
+                        const sid = row.th.sessionID;
+                        return (() => {
+                          var _el$13 = _$createElement("box"), _el$14 = _$createElement("text");
+                          _$insertNode(_el$13, _el$14);
+                          _$setProp(_el$13, "flexDirection", "row");
+                          _$setProp(_el$13, "width", "100%");
+                          _$setProp(_el$13, "onMouseDrop", () => void dropOn(project));
+                          _$setProp(_el$14, "selectable", false);
+                          _$setProp(_el$14, "onMouseDown", (e) => {
+                            resetInteraction();
+                            if (isRightClick(e) || !sid)
+                              return;
+                            openSession(sid);
+                          });
+                          _$setProp(_el$14, "onMouseUp", (e) => {
+                            if (!isRightClick(e))
+                              return;
+                            resetInteraction();
+                            threadMenu(row.projectPath, row.th, row.children);
+                          });
+                          _$insert(_el$14, () => r.label);
+                          _$insert(_el$13, _$createComponent(Show, {
+                            when: badge,
+                            children: (b) => (() => {
+                              var _el$15 = _$createElement("box"), _el$16 = _$createElement("text");
+                              _$insertNode(_el$15, _el$16);
+                              _$setProp(_el$15, "paddingLeft", 1);
+                              _$setProp(_el$15, "onMouseDown", resetInteraction);
+                              _$setProp(_el$15, "onMouseUp", () => {
+                                if (dragName || swallowClick)
+                                  return;
+                                toggleSubagents(row.th);
+                              });
+                              _$setProp(_el$16, "selectable", false);
+                              _$insert(_el$16, () => b().text);
+                              _$effect((_$p) => _$setProp(_el$16, "fg", b().fg, _$p));
+                              return _el$15;
+                            })()
+                          }), null);
+                          _$effect((_$p) => _$setProp(_el$14, "fg", r.fg, _$p));
+                          return _el$13;
+                        })();
+                      }
+                    });
+                  }
+                }), null);
+                return _el$9;
+              })()
+            });
+          }
+        }), null);
+        _$insert(_el$, _$createComponent(Show, {
+          get when() {
+            return t.loose.length > 0;
+          },
+          get children() {
+            var _el$5 = _$createElement("box"), _el$6 = _$createElement("text");
+            _$insertNode(_el$5, _el$6);
+            _$setProp(_el$5, "flexDirection", "column");
+            _$setProp(_el$5, "marginTop", 1);
+            _$setProp(_el$6, "fg", muted);
+            _$insert(_el$6, () => `\u0411\u0415\u0417 \u041F\u0420\u041E\u0415\u041A\u0422\u0410 ${t.loose.length}`);
+            _$insert(_el$5, _$createComponent(For, {
+              get each() {
+                return t.loose;
+              },
+              children: (s) => {
+                const r = rowFor({
+                  folder: "",
+                  slug: "",
+                  sessionID: s.sessionID,
+                  title: s.title,
+                  parentSessionID: null,
+                  agent: null,
+                  createdAt: null
+                }, s);
+                return (() => {
+                  var _el$17 = _$createElement("text");
+                  _$setProp(_el$17, "selectable", false);
+                  _$setProp(_el$17, "onMouseDown", (e) => {
+                    resetInteraction();
+                    if (isRightClick(e))
+                      return;
+                    openSession(s.sessionID);
                   });
-                }
-              }), null);
-              return _el$9;
-            })()
-          });
-        }
-      }), null);
-      _$insert(_el$, _$createComponent(Show, {
-        get when() {
-          return t.loose.length > 0;
-        },
-        get children() {
-          var _el$5 = _$createElement("box"), _el$6 = _$createElement("text");
-          _$insertNode(_el$5, _el$6);
-          _$setProp(_el$5, "flexDirection", "column");
-          _$setProp(_el$5, "marginTop", 1);
-          _$setProp(_el$6, "fg", muted);
-          _$insert(_el$6, () => `\u0411\u0415\u0417 \u041F\u0420\u041E\u0415\u041A\u0422\u0410 ${t.loose.length}`);
-          _$insert(_el$5, _$createComponent(For, {
-            get each() {
-              return t.loose;
-            },
-            children: (s) => {
-              const r = rowFor({
-                folder: "",
-                slug: "",
-                sessionID: s.sessionID,
-                title: s.title
-              }, s);
-              return (() => {
-                var _el$14 = _$createElement("text");
-                _$setProp(_el$14, "selectable", false);
-                _$setProp(_el$14, "onMouseDown", (e) => {
-                  resetInteraction();
-                  if (isRightClick(e))
-                    return;
-                  openSession(s.sessionID);
-                });
-                _$setProp(_el$14, "onMouseUp", (e) => {
-                  if (!isRightClick(e))
-                    return;
-                  resetInteraction();
-                  looseMenu(s);
-                });
-                _$setProp(_el$14, "onMouseDrop", cancelDrop);
-                _$insert(_el$14, () => `  ${r.marker} ${r.title}`);
-                _$effect((_$p) => _$setProp(_el$14, "fg", r.fg, _$p));
-                return _el$14;
-              })();
-            }
-          }), null);
-          return _el$5;
-        }
-      }), null);
-      return _el$;
-    })();
+                  _$setProp(_el$17, "onMouseUp", (e) => {
+                    if (!isRightClick(e))
+                      return;
+                    resetInteraction();
+                    looseMenu(s);
+                  });
+                  _$setProp(_el$17, "onMouseDrop", cancelDrop);
+                  _$insert(_el$17, () => `  ${r.marker} ${r.title}`);
+                  _$effect((_$p) => _$setProp(_el$17, "fg", r.fg, _$p));
+                  return _el$17;
+                })();
+              }
+            }), null);
+            return _el$5;
+          }
+        }), null);
+        return _el$;
+      })();
+    };
     let slotReg = null;
     rerenderFn = () => {
       slotReg?.();
