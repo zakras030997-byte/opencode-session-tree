@@ -1,6 +1,7 @@
-// TUI-часть local.session-tree (v0.6).
-// Левые клики — на mouseDown (мгновенно, не теряются), правый — одиночный mouseUp.
-// Контекстное меню действует напрямую на тред/проект, по которому кликнули.
+// TUI-часть opencode-session-tree (v0.7.0).
+// Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
+// правый — меню), «+», тумблер сайдбара, moveThread, индикаторы running/unread.
+// Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, Show } from "solid-js"
 import fs from "node:fs/promises"
@@ -15,18 +16,40 @@ type Tree = { projectsRoot: string; projects: ProjectDto[]; loose: LooseDto[] }
 
 const EMPTY: Tree = { projectsRoot: "", projects: [], loose: [] }
 const isRightClick = (e: unknown) => (e as { button?: number } | undefined)?.button === 2
+const trunc = (s: string, n = 30) => (s.length > n ? s.slice(0, n - 1) + "…" : s)
+const ORANGE = "#ff8c00"
+const GREEN = "#a6e3a1"
 
 export default Plugin.define({
   id: "opencode-session-tree",
   async setup(context) {
     const [getTree, setTree] = createSignal<Tree>(EMPTY)
     const [getExpanded, setExpanded] = createSignal<Set<string>>(new Set())
+    const [getUnread, setUnread] = createSignal<Record<string, boolean>>({})
+    const [getLive, setLive] = createSignal<Record<string, boolean>>({})
+    const currentSIDRef = { value: "" }
     let rerenderFn: (() => void) | null = null
     const rpc = () => context.client.rpc(TreeRpc)
 
     const refresh = async () => {
       try {
-        setTree((await rpc().listTree({})) as Tree)
+        const t = (await rpc().listTree({})) as Tree
+        setTree(t)
+        // Живые треды: session.status по каждой известной сессии.
+        const live: Record<string, boolean> = { ...getLive() }
+        for (const p of t.projects) {
+          for (const th of p.threads) {
+            if (!th.sessionID) continue
+            try {
+              const s = context.data.session.status(th.sessionID) as unknown
+              const txt = typeof s === "string" ? s : JSON.stringify(s ?? "")
+              live[th.sessionID] = /run|busy|active|work|pending|stream/i.test(txt)
+            } catch {
+              /* нет данных статуса */
+            }
+          }
+        }
+        setLive(live)
         rerenderFn?.()
       } catch {
         /* сервер недоступен */
@@ -36,17 +59,28 @@ export default Plugin.define({
 
     let last = 0
     const stopListen = context.data.listen((event: unknown) => {
+      const details = (event as { details?: Record<string, unknown> })?.details ?? {}
       const type =
-        (event as { details?: { type?: string }; type?: string })?.details?.type ??
-        (event as { type?: string })?.type ??
-        ""
-      if (typeof type === "string" && type.includes("session") && Date.now() - last > 1000) {
+        (details.type as string) ?? ((event as { type?: string })?.type ?? "")
+      const sid =
+        ((details as { info?: { id?: string } }).info?.id ??
+         (details as { sessionID?: string }).sessionID ??
+         ((event as { sessionID?: string })?.sessionID ?? "")) as string
+      if (typeof type !== "string") return
+      // Непрочитанный ответ: тред завершил работу, но открыт другой тред.
+      if (/execution\.succeeded|session\.idle|turn\.completed|message\.updated/.test(type)
+          && sid && sid !== currentSIDRef.value) {
+        setUnread((m) => ({ ...m, [sid]: true }))
+        rerenderFn?.()
+      }
+      if (type.includes("session") && Date.now() - last > 1000) {
         last = Date.now()
         void refresh()
       }
     })
 
     const openSession = (sessionID: string) => {
+      setUnread((m) => ({ ...m, [sessionID]: false }))
       void context.ui.router.navigate({ type: "session", sessionID })
     }
     const toastOk = (message: string) =>
@@ -66,7 +100,19 @@ export default Plugin.define({
       rerenderFn?.()
     }
 
-    // --- Диалог выбора треда (только для вызова из палитры) --------------
+    // --- Диалоги выбора ---------------------------------------------------
+
+    const pickProject = async () => {
+      const projects = getTree().projects
+      if (projects.length === 0) {
+        context.ui.toast.show({ title: "session-tree", message: "Нет проектов", variant: "info" })
+        return null
+      }
+      return context.ui.dialog.select({
+        title: "Проекты",
+        options: projects.map((p) => ({ title: p.name, value: p.path, description: p.path })),
+      })
+    }
 
     const pickThread = async () => {
       const t = getTree()
@@ -99,19 +145,7 @@ export default Plugin.define({
       return { projectPath, folder, sessionID }
     }
 
-    const pickProject = async () => {
-      const projects = getTree().projects
-      if (projects.length === 0) {
-        context.ui.toast.show({ title: "session-tree", message: "Нет проектов", variant: "info" })
-        return null
-      }
-      return context.ui.dialog.select({
-        title: "Проекты",
-        options: projects.map((p) => ({ title: p.name, value: p.path, description: p.path })),
-      })
-    }
-
-    // --- Прямые действия над конкретной сущностью (без переспрашивания) --
+    // --- Действия ---------------------------------------------------------
 
     const newProject = async () => {
       const name = await context.ui.dialog.prompt({ title: "Новый проект", placeholder: "имя-проекта" })
@@ -163,7 +197,6 @@ export default Plugin.define({
       if (picked) openSession(parsePick(picked).sessionID)
     }
 
-    // Переименовать конкретный тред
     const renameThreadDirect = async (sessionID: string) => {
       const title = await context.ui.dialog.prompt({ title: "Переименовать тред", placeholder: "Новое имя" })
       if (!title?.trim()) return
@@ -176,7 +209,6 @@ export default Plugin.define({
       }
     }
 
-    // Удалить конкретный тред
     const deleteThreadDirect = async (target: { projectPath?: string; folder?: string; sessionID: string }) => {
       const isProjectThread = !!target.projectPath && !!target.folder
       const confirmed = await context.ui.dialog.confirm({
@@ -206,7 +238,6 @@ export default Plugin.define({
       }
     }
 
-    // Переименовать конкретный проект
     const renameProjectDirect = async (projectPath: string) => {
       const project = getTree().projects.find((p) => p.path === projectPath)
       const name = await context.ui.dialog.prompt({
@@ -223,7 +254,6 @@ export default Plugin.define({
       }
     }
 
-    // Удалить конкретный проект
     const deleteProjectDirect = async (projectPath: string) => {
       const project = getTree().projects.find((p) => p.path === projectPath)
       const total = project?.threads.length ?? 0
@@ -248,11 +278,9 @@ export default Plugin.define({
     }
 
     const copyIdCmd = async (id: string) => {
-      // Буфера обмена в plugin API нет — показываем ID, его можно выделить и скопировать.
       await context.ui.dialog.alert({ title: "Session ID", message: id })
     }
 
-    // Тумблер сайдбара: session.sidebar auto<->hide в cli.json (перечитывается на лету).
     const toggleSidebar = async () => {
       const cliConfig = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "opencode", "cli.json")
       let cfg: Record<string, unknown> = {}
@@ -274,7 +302,6 @@ export default Plugin.define({
       })
     }
 
-    // Переместить тред в другой проект (папка + история; для «без проекта» — только история).
     const moveThreadDirect = async (target: { projectPath?: string; folder?: string; sessionID: string }) => {
       const projects = getTree().projects.filter((p) => p.path !== target.projectPath)
       if (projects.length === 0) {
@@ -299,7 +326,7 @@ export default Plugin.define({
       }
     }
 
-    // --- Обёртки для палитры (там выбор треда уместен) --------------------
+    // --- Обёртки для палитры ----------------------------------------------
 
     const renameThreadCmd = async () => {
       const picked = await pickThread()
@@ -321,7 +348,7 @@ export default Plugin.define({
       if (target) await deleteProjectDirect(target)
     }
 
-    // --- Меню по правому клику: работают с конкретной сущностью ----------
+    // --- Меню по правому клику --------------------------------------------
 
     const projectMenu = async (project: ProjectDto) => {
       const action = await context.ui.dialog.select({
@@ -374,7 +401,7 @@ export default Plugin.define({
       else if (action === "delete") await deleteThreadDirect({ sessionID: s.sessionID })
     }
 
-    // --- Клавиатурный паритет (палитра + слэш) ---------------------------
+    // --- Клавиатурный паритет ----------------------------------------------
 
     context.keymap.layer(() => ({
       mode: "global",
@@ -392,12 +419,20 @@ export default Plugin.define({
       bindings: [],
     }))
 
-    // --- Рендер ----------------------------------------------------------
-    // Левые клики — onMouseDown (мгновенно; надёжнее, чем mouseUp после выделения текста).
-    // Правый клик — onMouseUp, одиночное нажатие. Диалоговые элементы — onMouseUp.
+    // --- Рендер -------------------------------------------------------------
 
     const muted = (context.theme as { text?: { muted?: string } }).text?.muted ?? context.theme.text.base
     const HEADER = "ПРОЕКТЫ"
+
+    const rowFor = (th: ThreadDto, loose: LooseDto | undefined) => {
+      const sid = th.sessionID ?? loose?.sessionID ?? null
+      const title = th.title ?? loose?.title ?? ""
+      const live = sid ? !!getLive()[sid] : false
+      const unread = sid ? !!getUnread()[sid] : false
+      const marker = live ? "●" : unread ? "◉" : "·"
+      const fg = live ? GREEN : unread ? ORANGE : th.sessionID ? context.theme.text.base : muted
+      return { marker, fg, title: trunc(title, 30) }
+    }
 
     const renderTree = (t: Tree) => (
       <box flexDirection="column" marginTop={1}>
@@ -410,7 +445,7 @@ export default Plugin.define({
               <box flexDirection="column">
                 <box flexDirection="row">
                   <text
-                    fg={context.theme.text.base}
+                    fg={ORANGE}
                     onMouseDown={(e: unknown) => {
                       if (isRightClick(e)) return
                       toggleExpanded(project.name)
@@ -419,7 +454,7 @@ export default Plugin.define({
                       if (isRightClick(e)) void projectMenu(project)
                     }}
                   >
-                    {`${getExpanded().has(project.name) ? "▾" : "▸"} ${project.name} · ${project.threads.length} `}
+                    {`${getExpanded().has(project.name) ? "▾" : "▸"} ${trunc(project.name, 26)} · ${project.threads.length} `}
                   </text>
                   <box
                     onMouseUp={() => void newThreadIn(project.path)}
@@ -431,20 +466,23 @@ export default Plugin.define({
                 </box>
                 <Show when={getExpanded().has(project.name)}>
                   <For each={project.threads}>
-                    {(th) => (
-                      <text
-                        fg={th.sessionID ? context.theme.text.base : muted}
-                        onMouseDown={(e: unknown) => {
-                          if (isRightClick(e) || !th.sessionID) return
-                          openSession(th.sessionID)
-                        }}
-                        onMouseUp={(e: unknown) => {
-                          if (isRightClick(e)) void threadMenu(project.path, th)
-                        }}
-                      >
-                        {`    · ${th.title}`}
-                      </text>
-                    )}
+                    {(th) => {
+                      const r = rowFor(th, undefined)
+                      return (
+                        <text
+                          fg={r.fg}
+                          onMouseDown={(e: unknown) => {
+                            if (isRightClick(e) || !th.sessionID) return
+                            openSession(th.sessionID)
+                          }}
+                          onMouseUp={(e: unknown) => {
+                            if (isRightClick(e)) void threadMenu(project.path, th)
+                          }}
+                        >
+                          {`    ${r.marker} ${r.title}`}
+                        </text>
+                      )
+                    }}
                   </For>
                 </Show>
               </box>
@@ -455,20 +493,23 @@ export default Plugin.define({
           <box flexDirection="column" marginTop={1}>
             <text fg={muted}>{`БЕЗ ПРОЕКТА ${t.loose.length}`}</text>
             <For each={t.loose}>
-              {(s) => (
-                <text
-                  fg={context.theme.text.base}
-                  onMouseDown={(e: unknown) => {
-                    if (isRightClick(e)) return
-                    openSession(s.sessionID)
-                  }}
-                  onMouseUp={(e: unknown) => {
-                    if (isRightClick(e)) void looseMenu(s)
-                  }}
-                >
-                  {`  · ${s.title}`}
-                </text>
-              )}
+              {(s) => {
+                const r = rowFor({ folder: "", slug: "", sessionID: s.sessionID, title: s.title }, s)
+                return (
+                  <text
+                    fg={r.fg}
+                    onMouseDown={(e: unknown) => {
+                      if (isRightClick(e)) return
+                      openSession(s.sessionID)
+                    }}
+                    onMouseUp={(e: unknown) => {
+                      if (isRightClick(e)) void looseMenu(s)
+                    }}
+                  >
+                    {`  ${r.marker} ${r.title}`}
+                  </text>
+                )
+              }}
             </For>
           </box>
         </Show>
@@ -481,7 +522,10 @@ export default Plugin.define({
       const snapshot = getTree()
       slotReg = context.ui.slot({
         append: "sidebar.content",
-        render: () => renderTree(snapshot),
+        render: (props: { sessionID?: string } | undefined) => {
+          currentSIDRef.value = props?.sessionID ?? currentSIDRef.value
+          return renderTree(snapshot)
+        },
       })
     }
 

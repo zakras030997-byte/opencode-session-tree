@@ -196,7 +196,8 @@ var TreeRpc = Rpc.define({
         properties: {
           sessionID: { type: "string" },
           folder: { type: "string" },
-          targetProject: { type: "string" }
+          targetProject: { type: "string" },
+          slug: { type: "string" }
         },
         required: ["sessionID", "targetProject"],
         additionalProperties: false
@@ -229,29 +230,68 @@ var EMPTY = {
   loose: []
 };
 var isRightClick = (e) => e?.button === 2;
+var trunc = (s, n = 30) => s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
+var ORANGE = "#ff8c00";
+var GREEN = "#a6e3a1";
 var tui_default = Plugin.define({
   id: "opencode-session-tree",
   async setup(context) {
     const [getTree, setTree] = createSignal(EMPTY);
     const [getExpanded, setExpanded] = createSignal(new Set);
+    const [getUnread, setUnread] = createSignal({});
+    const [getLive, setLive] = createSignal({});
+    const currentSIDRef = {
+      value: ""
+    };
     let rerenderFn = null;
     const rpc = () => context.client.rpc(TreeRpc);
     const refresh = async () => {
       try {
-        setTree(await rpc().listTree({}));
+        const t = await rpc().listTree({});
+        setTree(t);
+        const live = {
+          ...getLive()
+        };
+        for (const p of t.projects) {
+          for (const th of p.threads) {
+            if (!th.sessionID)
+              continue;
+            try {
+              const s = context.data.session.status(th.sessionID);
+              const txt = typeof s === "string" ? s : JSON.stringify(s ?? "");
+              live[th.sessionID] = /run|busy|active|work|pending|stream/i.test(txt);
+            } catch {}
+          }
+        }
+        setLive(live);
         rerenderFn?.();
       } catch {}
     };
     await refresh();
     let last = 0;
     const stopListen = context.data.listen((event) => {
-      const type = event?.details?.type ?? event?.type ?? "";
-      if (typeof type === "string" && type.includes("session") && Date.now() - last > 1000) {
+      const details = event?.details ?? {};
+      const type = details.type ?? event?.type ?? "";
+      const sid = details.info?.id ?? details.sessionID ?? event?.sessionID ?? "";
+      if (typeof type !== "string")
+        return;
+      if (/execution\.succeeded|session\.idle|turn\.completed|message\.updated/.test(type) && sid && sid !== currentSIDRef.value) {
+        setUnread((m) => ({
+          ...m,
+          [sid]: true
+        }));
+        rerenderFn?.();
+      }
+      if (type.includes("session") && Date.now() - last > 1000) {
         last = Date.now();
         refresh();
       }
     });
     const openSession = (sessionID) => {
+      setUnread((m) => ({
+        ...m,
+        [sessionID]: false
+      }));
       context.ui.router.navigate({
         type: "session",
         sessionID
@@ -275,6 +315,25 @@ var tui_default = Plugin.define({
         next.add(name);
       setExpanded(next);
       rerenderFn?.();
+    };
+    const pickProject = async () => {
+      const projects = getTree().projects;
+      if (projects.length === 0) {
+        context.ui.toast.show({
+          title: "session-tree",
+          message: "\u041D\u0435\u0442 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432",
+          variant: "info"
+        });
+        return null;
+      }
+      return context.ui.dialog.select({
+        title: "\u041F\u0440\u043E\u0435\u043A\u0442\u044B",
+        options: projects.map((p) => ({
+          title: p.name,
+          value: p.path,
+          description: p.path
+        }))
+      });
     };
     const pickThread = async () => {
       const t = getTree();
@@ -313,25 +372,6 @@ ${s.sessionID}`,
         folder,
         sessionID
       };
-    };
-    const pickProject = async () => {
-      const projects = getTree().projects;
-      if (projects.length === 0) {
-        context.ui.toast.show({
-          title: "session-tree",
-          message: "\u041D\u0435\u0442 \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u0432",
-          variant: "info"
-        });
-        return null;
-      }
-      return context.ui.dialog.select({
-        title: "\u041F\u0440\u043E\u0435\u043A\u0442\u044B",
-        options: projects.map((p) => ({
-          title: p.name,
-          value: p.path,
-          description: p.path
-        }))
-      });
     };
     const newProject = async () => {
       const name = await context.ui.dialog.prompt({
@@ -760,6 +800,19 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
     }));
     const muted = context.theme.text?.muted ?? context.theme.text.base;
     const HEADER = "\u041F\u0420\u041E\u0415\u041A\u0422\u042B";
+    const rowFor = (th, loose) => {
+      const sid = th.sessionID ?? loose?.sessionID ?? null;
+      const title = th.title ?? loose?.title ?? "";
+      const live = sid ? !!getLive()[sid] : false;
+      const unread = sid ? !!getUnread()[sid] : false;
+      const marker = live ? "\u25CF" : unread ? "\u25C9" : "\xB7";
+      const fg = live ? GREEN : unread ? ORANGE : th.sessionID ? context.theme.text.base : muted;
+      return {
+        marker,
+        fg,
+        title: trunc(title, 30)
+      };
+    };
     const renderTree = (t) => (() => {
       var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text");
       _$insertNode(_el$, _el$2);
@@ -796,6 +849,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$insertNode(_el$0, _el$1);
               _$insertNode(_el$0, _el$10);
               _$setProp(_el$0, "flexDirection", "row");
+              _$setProp(_el$1, "fg", "#ff8c00");
               _$setProp(_el$1, "onMouseDown", (e) => {
                 if (isRightClick(e))
                   return;
@@ -805,7 +859,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                 if (isRightClick(e))
                   projectMenu(project);
               });
-              _$insert(_el$1, () => `${getExpanded().has(project.name) ? "\u25BE" : "\u25B8"} ${project.name} \xB7 ${project.threads.length} `);
+              _$insert(_el$1, () => `${getExpanded().has(project.name) ? "\u25BE" : "\u25B8"} ${trunc(project.name, 26)} \xB7 ${project.threads.length} `);
               _$insertNode(_el$10, _el$11);
               _$setProp(_el$10, "onMouseUp", () => void newThreadIn(project.path));
               _$setProp(_el$10, "paddingLeft", 1);
@@ -821,25 +875,27 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                     get each() {
                       return project.threads;
                     },
-                    children: (th) => (() => {
-                      var _el$13 = _$createElement("text");
-                      _$setProp(_el$13, "onMouseDown", (e) => {
-                        if (isRightClick(e) || !th.sessionID)
-                          return;
-                        openSession(th.sessionID);
-                      });
-                      _$setProp(_el$13, "onMouseUp", (e) => {
-                        if (isRightClick(e))
-                          threadMenu(project.path, th);
-                      });
-                      _$insert(_el$13, () => `    \xB7 ${th.title}`);
-                      _$effect((_$p) => _$setProp(_el$13, "fg", th.sessionID ? context.theme.text.base : muted, _$p));
-                      return _el$13;
-                    })()
+                    children: (th) => {
+                      const r = rowFor(th, undefined);
+                      return (() => {
+                        var _el$13 = _$createElement("text");
+                        _$setProp(_el$13, "onMouseDown", (e) => {
+                          if (isRightClick(e) || !th.sessionID)
+                            return;
+                          openSession(th.sessionID);
+                        });
+                        _$setProp(_el$13, "onMouseUp", (e) => {
+                          if (isRightClick(e))
+                            threadMenu(project.path, th);
+                        });
+                        _$insert(_el$13, () => `    ${r.marker} ${r.title}`);
+                        _$effect((_$p) => _$setProp(_el$13, "fg", r.fg, _$p));
+                        return _el$13;
+                      })();
+                    }
                   });
                 }
               }), null);
-              _$effect((_$p) => _$setProp(_el$1, "fg", context.theme.text.base, _$p));
               return _el$9;
             })()
           });
@@ -860,21 +916,29 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
             get each() {
               return t.loose;
             },
-            children: (s) => (() => {
-              var _el$14 = _$createElement("text");
-              _$setProp(_el$14, "onMouseDown", (e) => {
-                if (isRightClick(e))
-                  return;
-                openSession(s.sessionID);
-              });
-              _$setProp(_el$14, "onMouseUp", (e) => {
-                if (isRightClick(e))
-                  looseMenu(s);
-              });
-              _$insert(_el$14, () => `  \xB7 ${s.title}`);
-              _$effect((_$p) => _$setProp(_el$14, "fg", context.theme.text.base, _$p));
-              return _el$14;
-            })()
+            children: (s) => {
+              const r = rowFor({
+                folder: "",
+                slug: "",
+                sessionID: s.sessionID,
+                title: s.title
+              }, s);
+              return (() => {
+                var _el$14 = _$createElement("text");
+                _$setProp(_el$14, "onMouseDown", (e) => {
+                  if (isRightClick(e))
+                    return;
+                  openSession(s.sessionID);
+                });
+                _$setProp(_el$14, "onMouseUp", (e) => {
+                  if (isRightClick(e))
+                    looseMenu(s);
+                });
+                _$insert(_el$14, () => `  ${r.marker} ${r.title}`);
+                _$effect((_$p) => _$setProp(_el$14, "fg", r.fg, _$p));
+                return _el$14;
+              })();
+            }
           }), null);
           return _el$5;
         }
@@ -887,7 +951,10 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       const snapshot = getTree();
       slotReg = context.ui.slot({
         append: "sidebar.content",
-        render: () => renderTree(snapshot)
+        render: (props) => {
+          currentSIDRef.value = props?.sessionID ?? currentSIDRef.value;
+          return renderTree(snapshot);
+        }
       });
     };
     rerenderFn();
