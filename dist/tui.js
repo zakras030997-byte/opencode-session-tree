@@ -827,10 +827,15 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
           row.fg = fg;
       } catch {}
     };
-    const startPress = (e, name) => {
+    const resetInteraction = () => {
       dragName = null;
       dragEl = null;
       hoverName = null;
+      pressName = null;
+      pressY = -1;
+    };
+    const startPress = (e, name) => {
+      resetInteraction();
       pressName = name;
       pressY = typeof e?.y === "number" ? e.y : -1;
     };
@@ -885,6 +890,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
         await refresh();
       }
     };
+    const cancelDrop = () => resetInteraction();
     const rowFor = (th, loose) => {
       const sid = th.sessionID ?? loose?.sessionID ?? null;
       const title = th.title ?? loose?.title ?? "";
@@ -907,6 +913,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
       _$setProp(_el$2, "flexDirection", "row");
       _$setProp(_el$2, "width", "100%");
       _$setProp(_el$2, "justifyContent", "center");
+      _$setProp(_el$2, "onMouseDown", resetInteraction);
       _$setProp(_el$2, "onMouseUp", () => {
         if (dragName)
           return;
@@ -939,18 +946,16 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               _$insertNode(_el$0, _el$10);
               _$setProp(_el$0, "flexDirection", "row");
               _$setProp(_el$1, "fg", "#ff8c00");
-              _$setProp(_el$1, "onMouseDown", (e) => {
-                if (isRightClick(e))
-                  return;
-                startPress(e, project.name);
-              });
+              _$setProp(_el$1, "onMouseDown", (e) => startPress(e, project.name));
               _$setProp(_el$1, "onMouseUp", (e) => {
+                if (isRightClick(e)) {
+                  resetInteraction();
+                  projectMenu(project);
+                  return;
+                }
                 if (dragName)
                   return;
-                if (isRightClick(e))
-                  projectMenu(project);
-                else
-                  toggleExpanded(project.name);
+                toggleExpanded(project.name);
               });
               _$setProp(_el$1, "onMouseDrag", (e) => armDrag(e, project));
               _$setProp(_el$1, "onMouseDragEnd", releaseDrag);
@@ -972,6 +977,7 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               });
               _$insert(_el$1, () => projectLabel(project));
               _$insertNode(_el$10, _el$11);
+              _$setProp(_el$10, "onMouseDown", resetInteraction);
               _$setProp(_el$10, "onMouseUp", () => {
                 if (dragName)
                   return;
@@ -996,15 +1002,16 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
                       return (() => {
                         var _el$13 = _$createElement("text");
                         _$setProp(_el$13, "onMouseDown", (e) => {
-                          if (isRightClick(e) || !th.sessionID || dragName)
+                          resetInteraction();
+                          if (isRightClick(e) || !th.sessionID)
                             return;
                           openSession(th.sessionID);
                         });
                         _$setProp(_el$13, "onMouseUp", (e) => {
-                          if (dragName)
+                          if (!isRightClick(e))
                             return;
-                          if (isRightClick(e))
-                            threadMenu(project.path, th);
+                          resetInteraction();
+                          threadMenu(project.path, th);
                         });
                         _$setProp(_el$13, "onMouseDrop", () => void dropOn(project));
                         _$insert(_el$13, () => `    ${r.marker} ${r.title}`);
@@ -1045,17 +1052,18 @@ ${total} \u0442\u0440\u0435\u0434(\u043E\u0432), \u0438\u0445 \u0441\u0435\u0441
               return (() => {
                 var _el$14 = _$createElement("text");
                 _$setProp(_el$14, "onMouseDown", (e) => {
-                  if (isRightClick(e) || dragName)
+                  resetInteraction();
+                  if (isRightClick(e))
                     return;
                   openSession(s.sessionID);
                 });
                 _$setProp(_el$14, "onMouseUp", (e) => {
-                  if (dragName)
+                  if (!isRightClick(e))
                     return;
-                  if (isRightClick(e))
-                    looseMenu(s);
+                  resetInteraction();
+                  looseMenu(s);
                 });
-                _$setProp(_el$14, "onMouseDrop", releaseDrag);
+                _$setProp(_el$14, "onMouseDrop", cancelDrop);
                 _$insert(_el$14, () => `  ${r.marker} ${r.title}`);
                 _$effect((_$p) => _$setProp(_el$14, "fg", r.fg, _$p));
                 return _el$14;

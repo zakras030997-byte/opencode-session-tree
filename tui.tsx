@@ -1,4 +1,4 @@
-// TUI-часть opencode-session-tree (v0.8.0).
+// TUI-часть opencode-session-tree (v0.8.1).
 // Дерево проектов/тредов в sidebar.content: клики мышью (левый — открыть/развернуть,
 // правый — меню), «+», перетаскивание проектов, тумблер сайдбара, moveThread, индикаторы running/unread.
 // Заголовки тредов обрезаются под ширину панели — переносы «с красной строки» невозможны.
@@ -449,10 +449,16 @@ export default Plugin.define({
       }
     }
 
-    const startPress = (e: unknown, name: string) => {
+    const resetInteraction = () => {
       dragName = null
       dragEl = null
       hoverName = null
+      pressName = null
+      pressY = -1
+    }
+
+    const startPress = (e: unknown, name: string) => {
+      resetInteraction()
       pressName = name
       pressY = typeof (e as { y?: number })?.y === "number" ? ((e as { y: number }).y as number) : -1
     }
@@ -484,7 +490,6 @@ export default Plugin.define({
         if (target) void dropOn(target)
       })
     }
-
     const dropOn = async (project: ProjectDto) => {
       const name = dragName
       dragName = null
@@ -505,6 +510,8 @@ export default Plugin.define({
       }
     }
 
+    const cancelDrop = () => resetInteraction()
+
     const rowFor = (th: ThreadDto, loose: LooseDto | undefined) => {
       const sid = th.sessionID ?? loose?.sessionID ?? null
       const title = th.title ?? loose?.title ?? ""
@@ -521,6 +528,7 @@ export default Plugin.define({
           flexDirection="row"
           width="100%"
           justifyContent="center"
+          onMouseDown={resetInteraction}
           onMouseUp={() => {
             if (dragName) return
             void newProject()
@@ -535,14 +543,15 @@ export default Plugin.define({
                 <box flexDirection="row">
                   <text
                     fg={ORANGE}
-                    onMouseDown={(e: unknown) => {
-                      if (isRightClick(e)) return
-                      startPress(e, project.name)
-                    }}
+                    onMouseDown={(e: unknown) => startPress(e, project.name)}
                     onMouseUp={(e: unknown) => {
+                      if (isRightClick(e)) {
+                        resetInteraction()
+                        void projectMenu(project)
+                        return
+                      }
                       if (dragName) return
-                      if (isRightClick(e)) void projectMenu(project)
-                      else toggleExpanded(project.name)
+                      toggleExpanded(project.name)
                     }}
                     onMouseDrag={(e: unknown) => armDrag(e, project)}
                     onMouseDragEnd={releaseDrag}
@@ -562,6 +571,7 @@ export default Plugin.define({
                     {projectLabel(project)}
                   </text>
                   <box
+                    onMouseDown={resetInteraction}
                     onMouseUp={() => {
                       if (dragName) return
                       void newThreadIn(project.path)
@@ -581,12 +591,14 @@ export default Plugin.define({
                         <text
                           fg={r.fg}
                           onMouseDown={(e: unknown) => {
-                            if (isRightClick(e) || !th.sessionID || dragName) return
+                            resetInteraction()
+                            if (isRightClick(e) || !th.sessionID) return
                             openSession(th.sessionID)
                           }}
                           onMouseUp={(e: unknown) => {
-                            if (dragName) return
-                            if (isRightClick(e)) void threadMenu(project.path, th)
+                            if (!isRightClick(e)) return
+                            resetInteraction()
+                            void threadMenu(project.path, th)
                           }}
                           onMouseDrop={() => void dropOn(project)}
                         >
@@ -610,14 +622,16 @@ export default Plugin.define({
                   <text
                     fg={r.fg}
                     onMouseDown={(e: unknown) => {
-                      if (isRightClick(e) || dragName) return
+                      resetInteraction()
+                      if (isRightClick(e)) return
                       openSession(s.sessionID)
                     }}
                     onMouseUp={(e: unknown) => {
-                      if (dragName) return
-                      if (isRightClick(e)) void looseMenu(s)
+                      if (!isRightClick(e)) return
+                      resetInteraction()
+                      void looseMenu(s)
                     }}
-                    onMouseDrop={releaseDrag}
+                    onMouseDrop={cancelDrop}
                   >
                     {`  ${r.marker} ${r.title}`}
                   </text>
